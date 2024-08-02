@@ -62,14 +62,3 @@ data %>%
 
 # Save the data as .csv
 write_csv(data, "results/protein_preprocessed.csv")
-
-# Alternative with protein_filtered_data
-
-# data0 <- read_csv("data/protein_data_filtered.csv")
-# 
-# # Tidy the data
-# data0 <- data0 %>% 
-#   # Create a numeric patient ID column
-#   rownames_to_column(var = "patient_id") %>% 
-#   mutate(patient_id = as.numeric(patient_id)) %>% 
-#   dplyr::select(-2)
