@@ -1,11 +1,16 @@
 ---
-title: "Initial analysis"
-output: 
-  html_document:
-    toc: TRUE
-    number_sections: TRUE
-    toc_float: TRUE
-date: "2024-07-29"
+title: "Exploratory analysis"
+author: "Ghada Nouairia & William Wu"
+date: "02/07/2024"
+output:
+  bookdown::html_document2:
+    toc: yes
+    toc_depth: 2
+    toc_float:
+      collapse: yes
+    fig_caption: yes
+    number_sections: no
+    code_folding: "hide"
 ---
 
 ```{r setup, include=FALSE}
@@ -19,9 +24,11 @@ library(factoextra)
 library(ChAMP)
 library(RColorBrewer)
 library(limma)
+library(ComplexHeatmap)
 ```
 
 ```{r Load the data, message=FALSE, warning=FALSE}
+setwd("~/projects/PSC_multiomics")
 metabolites <- read_csv("results/metabolite_preprocessed.csv")
 proteins <- read_csv("results/protein_preprocessed.csv")
 miRNA <- read_csv("results/miRNA_preprocessed.csv") 
@@ -151,18 +158,18 @@ The data comes in the unit of normalized protein expression (NPX) values on a lo
 Links
 Olink Target 96: https://olink.com/products/olink-target-96 Olink preprocessing for qPCR: https://7074596.fs1.hubspotusercontent-na1.net/hubfs/7074596/05-white%20paper%20for%20website/1096-olink-data-normalization-white-paper.pdf Panel proteins: https://www.bioxpedia.com/olink-proteomics/#:~:text=The%20readout%20for%20most%20Olink,equals%20a%20high%20protein%20concentration.
 
-## Data analysis
+## Data analysis {.tabset}
 ### Initial exploration
 ```{r proteins_density_plot}
 # Plotting the samples/individuals
-# proteins %>% 
-#   select(-patient_id) %>% 
-#   t() %>% 
-#   limma::plotDensities()
+proteins %>%
+  select(-patient_id) %>%
+  t() %>%
+  limma::plotDensities()
 # 
-# # Plotting the features/variables
-# proteins %>% 
-#   select(-patient_id) %>% 
+# Plotting the features/variables
+# proteins %>%
+#   select(-patient_id) %>%
 #   limma::plotDensities()
 ```
 
@@ -183,14 +190,8 @@ proteins %>%
     col = palette()[-1],
     main = "Protein distribtution", ylab = "Protein concentration ")
 ```
-
+### MSD
 ```{r proteins_mds_plot_1, message=FALSE, warning=FALSE}
-# Plotting the samples/individuals
-proteins %>%
-  select(-patient_id) %>% 
-  t() %>% 
-  limma::plotMDS()
-
 # Plotting the features/variables
 proteins %>%
   select(-patient_id) %>%
@@ -198,7 +199,7 @@ proteins %>%
 ```
 
 ### Shapiro-Wilks test
-The number of proteins that do not satisfy normality at p = 0.05 is: 224
+The number of proteins that do not satisfy normality at p = 0.05 is: 
 ```{r proteins_shapiro-wilk_test, message=FALSE, warning=FALSE}
 # Applying Shapirot_Wilks test for normality
 variables <- proteins %>% 
@@ -212,6 +213,7 @@ apply_shapiro(proteins, variables, 0.05)
 mwu <- apply_mwu(proteins, grp1 = c(1:33), grp2 = c(34:36))
 ```
 
+The number of significantly differentially expressed proteins at p < 0.05 is `r mwu %>% filter(p.value <= 0.05) %>% nrow()`, of which `r mwu %>% filter(p.value <= 0.05 & fold_change > 0) %>% nrow()` are upregulated and `r mwu %>% filter(p.value <= 0.05 & fold_change < 0) %>% nrow()` are downregulated.
 ```{r table, message=FALSE, warning=FALSE}
 datatable(mwu %>%
             inner_join(protein_metadata %>%
@@ -227,37 +229,33 @@ datatable(mwu %>%
 
 ```{r proteins_volcano_plot, message=FALSE, warning=FALSE}
 # pdf(file = "results/volcano_prot_controls.pdf")
-mwu %>% 
-  ggplot(aes(
-    x = fold_change, 
-    y = -log10(p.value), 
-    color = p.value < 0.05)) +
-    geom_point(cex = 2.5) +
-    scale_color_manual(values = alpha(c("darkgray", "darkorange"), 0.5)) +
-    theme_minimal() +
-    ggtitle("Mann-Whitney U test based volcano plot")
+plot_volcano(mwu, 0.05) 
  # while (!is.null(dev.list()))  dev.off()
 ```
 
-### SVD and MDS plot
+### SVD 
 We check the plausible confounders and the studied effects in the data
-```{r proteins_svd, message=FALSE, warning=FALSE}
+```{r proteins_svd, message=FALSE, warning=FALSE, results='hide'}
 beta1 <- proteins %>% 
-  dplyr::slice(1:33) %>% 
+  # dplyr::slice(1:33) %>%       ### no Control
   dplyr::select(-patient_id) %>%
   t() %>% 
-  as.data.frame()
+  as.data.frame() 
+# beta1 <- cbind(beta1[1:11], beta1[13], beta1[29:32])  ####no NoIBD and no CCA
 
 pd1 <- metadata %>% 
-  dplyr::slice(1:33) %>% 
+  # dplyr::slice(1:33) %>%
+  # filter(ibd_binary == "1" & cca_binary == "0") %>%
   select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
   as.data.frame()
 
-# pdf(file = "results/svd_proteins.pdf")
+# pdf(file = "results/illustrations/svd_proteins.pdf")
 champ.SVD(beta = beta1, pd = pd1)
 # while (!is.null(dev.list()))  dev.off()
 ```
 
+### MSD multiple dimensions {.tabset}
+#### Effect of age category
 Using MDS plots to check the grouping of the data according to the confouders found by SVD: colors represent age categories: No much effect of age categories
 ```{r proteins_mds_plot, message=FALSE, warning=FALSE}
 pal <- brewer.pal(8,"Dark2")
@@ -292,8 +290,10 @@ proteins %>%
     dim.plot = c(2, 3),
     col=pal[factor(metadata$age_cat[1:33])])
 ```
+
+#### Effect of groups
 Looking at the groups (early PSC, CCA, IBD, Advanced and progressing): there is some grouping but not good enough: some feature selection may be needed.
-```{r group_effect, warning=FALSE}
+```{r group_effect3, warning=FALSE}
 proteins %>%
   dplyr::select(-patient_id) %>%
   dplyr::slice(1:33) %>%
@@ -326,6 +326,10 @@ proteins %>%
 ```
 
 
+### {-}
+
+## {-}
+
 # miRNA
 ## Data description
 The miRNA data is analysed for 36 samples, 33 patients and 3 healthy donors.
@@ -336,7 +340,8 @@ NGS
 Preprocessing:
 The readings are mapped to known human miRNA from the miRBase data base. !(The data output comes out in the form of counts - no modification). The facility also provides mature miRNA log transformed values (that we use here). Constant values of this dataset were removed.
 
-## Data analysis
+## Data analysis {.tabset}
+### Initial explorataion
 Checking sample's outliers
 ```{r miRNA_box_plot, message=FALSE, warning=FALSE}
 # Plotting the samples/individuals
@@ -369,31 +374,24 @@ datatable(mwu,
                    buttons = c('excel', "csv")))
 ```
 
+The number of significantly differentially expressed miRNA at p < 0.05 is `r mwu %>% filter(p.value <= 0.05) %>% nrow()`, of which `r mwu %>% filter(p.value <= 0.05 & fold_change > 0) %>% nrow()` are upregulated and `r mwu %>% filter(p.value <= 0.05 & fold_change < 0) %>% nrow()` are downregulated.
 ```{r miRNA_volcano_plot, message=FALSE, warning=FALSE}
 # pdf(file = "results/volcano_miRNA_controls.pdf")
-mwu %>% 
-  ggplot(aes(
-    x = fold_change, 
-    y = -log10(p.value), 
-    color = p.value < 0.05)) +
-    geom_point(cex = 2.5) +
-    scale_color_manual(values = alpha(c("black", "hotpink"), 0.5)) +
-    theme_minimal() +
-    ggtitle("Mann-Whitney U test based volcano plot")
- # while (!is.null(dev.list()))  dev.off()
+plot_volcano(mwu, 0.05) + scale_color_manual(values = alpha(c("black", "red"), 0.5)) 
+# while (!is.null(dev.list()))  dev.off()
 ```
 
-### SVD and MDS plot
+### SVD 
 We check the plausible confounders and the studied effects in the data
-```{r miRNA_svd, message=FALSE, warning=FALSE}
+```{r miRNA_svd, message=FALSE, warning=FALSE, results='hide'}
 beta1 <- miRNA %>% 
-  # dplyr::slice(1:33) %>% 
+  dplyr::slice(1:33) %>%
   dplyr::select(-patient_id) %>%
   t() %>% 
   as.data.frame()
 
 pd1 <- metadata %>% 
-  # dplyr::slice(1:33) %>% 
+  dplyr::slice(1:33) %>%
   select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
   as.data.frame()
 # pdf(file = "results/svd_miRNA.pdf")
@@ -401,6 +399,7 @@ champ.SVD(beta = beta1, pd = pd1)
  # while (!is.null(dev.list()))  dev.off()
 ```
 
+### MDS plot of groups
 Using MDS plots to check the grouping of the data 
 ```{r miRNA_mds_plot, message=FALSE, warning=FALSE}
 pal <- brewer.pal(8,"Dark2")
@@ -436,6 +435,8 @@ miRNA %>%
     col=pal[factor(metadata$group[1:33])])
 ```
 
+## {-}
+
 # Metabolites
 ## Data description
 The metabolite data is analysed for 45 samples, 33 patients and 12 healthy donors.
@@ -446,9 +447,7 @@ Ultra performance liquid chromatography + Tandem mass spectroscopy.
 Preprocessing:
 The values are log transformed (base unknown). The missing values are imputated with the minimum observed value of that respective compound. The data is normalized so that the median/medians are 1.0000 and all other values are proportional.
 
-## Data analysis
-### Log-transform
-
+## Data analysis {.tabset}
 ```{r log, message=FALSE, warning=FALSE}
 log2_metabolites <- cbind(
   metabolites[1], 
@@ -457,11 +456,11 @@ log2_metabolites <- cbind(
 
 ### Initil plots
 ```{r metabolites_density_plot, message=FALSE, warning=FALSE}
-# # Plotting the samples/individuals
-# log2_metabolites %>% 
-#   select(-patient_id) %>% 
-#   t() %>% 
-#   limma::plotDensities()
+# Plotting the samples/individuals
+log2_metabolites %>%
+  select(-patient_id) %>%
+  t() %>%
+  limma::plotDensities()
 # 
 # # Plotting the features/variables
 # proteins %>% 
@@ -506,32 +505,24 @@ datatable(mwu,
     options = list(dom = 'Bfrtip', 
                    buttons = c('excel', "csv")))
 ```
-
+The number of significantly differentially expressed miRNA at p < 0.05 is `r mwu %>% filter(p.value <= 0.05) %>% nrow()`, of which `r mwu %>% filter(p.value <= 0.05 & fold_change > 0) %>% nrow()` are upregulated and `r mwu %>% filter(p.value <= 0.05 & fold_change < 0) %>% nrow()` are downregulated.
 ```{r metabolites_volcano_plot, message=FALSE, warning=FALSE}
 # pdf(file = "results/volcano_metabolomics.pdf")
-mwu %>% 
-  ggplot(aes(
-    x = fold_change, 
-    y = -log10(p.value), 
-    color = p.value < 0.05)) +
-    geom_point(cex = 2.5) +
-    scale_color_manual(values = alpha(c("darkgray", "red"), 0.5)) +
-    theme_minimal() +
-    ggtitle("Mann-Whitney U test based volcano plot")
+plot_volcano(mwu, 0.05) + scale_color_manual(values = alpha(c("black", "red"), 0.5)) 
  # while (!is.null(dev.list()))  dev.off()
 ```
 
-### SVD and MDS plot
+### SVD
 We check the plausible confounders and the studied effects in the data
-```{r metabolites_svd, message=FALSE, warning=FALSE}
+```{r metabolites_svd, message=FALSE, warning=FALSE, results='hide'}
 beta1 <- log2_metabolites %>% 
-  dplyr::slice(1:33) %>% 
+  dplyr::slice(1:36) %>% 
   dplyr::select(-patient_id) %>%
   t() %>% 
   as.data.frame()
 
 pd1 <- metadata %>% 
-  dplyr::slice(1:33) %>% 
+  # dplyr::slice(1:33) %>%
   select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
   as.data.frame()
 
@@ -540,7 +531,10 @@ champ.SVD(beta = beta1, pd = pd1)
  # while (!is.null(dev.list()))  dev.off()
 ```
 
+### MDS multiple dimensions {.tabset}
 Using MDS plots to check the grouping of the data according to the confouders found by SVD. Age effect is clearly visible in the data. It may be necessary to adjust for it or to do some feature selection.
+
+#### Age category effect
 ```{r metabolites_mds_plot, message=FALSE, warning=FALSE}
 pal <- brewer.pal(8,"Dark2")
 
@@ -575,7 +569,9 @@ log2_metabolites %>%
     col=pal[factor(metadata$age_cat[1:33])])
 ```
 Looking at the groups (early PSC, CCA, IBD, Advanced and progressing): there is some grouping but not good enough: some feature selection may be needed.
-```{r group_effect, warning=FALSE, message=FALSE}
+
+#### Effect of groups
+```{r group_effect2, warning=FALSE, message=FALSE}
 log2_metabolites %>%
   dplyr::select(-patient_id) %>%
   dplyr::slice(1:33) %>%
@@ -606,40 +602,74 @@ log2_metabolites %>%
     dim.plot = c(2, 3),
     col=pal[factor(metadata$group[1:33])])
 ```
-## Unsupervised clustering of the data
+
+### {-}
+
+## {-}
+
+## Unsupervised clustering of the data {.tabset}
 ### Metabolomics
 Scaled, Best k = 4
 ```{r kmeans_metab, warning=FALSE, message=FALSE}
-res_km_r <- eclust(scale(log2_metabolites), "kmeans")
+res_km_r <- eclust(scale(log2_metabolites %>% dplyr::select(-patient_id)), "kmeans")
 fviz_gap_stat(res_km_r$gap_stat)
-# pdf(file = "results/Paper_illustratios/kmean_lasso_grpcolor.pdf")
-res_km_r <- eclust(scale(log2_metabolites), "kmeans", k = 4) 
+# pdf(file = "results/Illustrations/metabolomics_kmean_K4.pdf")
+res_km_r <- eclust(scale(log2_metabolites %>% dplyr::select(-patient_id)), "kmeans", k = 4) 
 # while (!is.null(dev.list()))  dev.off()
+
+res_km_r <- eclust(scale(log2_metabolites), FUNcluster = "hclust", k = 4, graph = TRUE)
+fviz_cluster(res_km_r, scale(log2_metabolites %>% dplyr::select(-patient_id)), ellipse.type = "ellipse", palette = c("#0b5313", "#ec4dd8", "blue", "orange"), ggtheme = theme_minimal())
 ```
 
 Non scaled
 ```{r kmean_metab, warning=FALSE, message=FALSE}
-res_km_r <- eclust(log2_metabolites, "kmeans")
+res_km_r <- eclust(log2_metabolites %>% dplyr::select(-patient_id), "kmeans")
 fviz_gap_stat(res_km_r$gap_stat)
 # pdf(file = "results/Paper_illustratios/kmean_lasso_grpcolor.pdf")
-res_km_r <- eclust(log2_metabolites, "kmeans", k = 4) 
+res_km_r <- eclust(log2_metabolites%>% dplyr::select(-patient_id), "kmeans", k = 4) 
 # while (!is.null(dev.list()))  dev.off()
+
+res_km_r <- eclust(log2_metabolites%>% dplyr::select(-patient_id), FUNcluster = "hclust", k = 4, graph = TRUE)
+fviz_cluster(res_km_r, log2_metabolites%>% dplyr::select(-patient_id), ellipse.type = "ellipse", palette = c("#0b5313", "#ec4dd8", "blue", "orange"), ggtheme = theme_minimal())
 ```
 
 ### Proteomics data
 ```{r kmeans_prot, warning=FALSE, message=FALSE}
-res_km_r <- eclust(scale(proteins), "kmeans")
+res_km_r <- eclust(scale(proteins %>% dplyr::select(-patient_id)), "kmeans")
 fviz_gap_stat(res_km_r$gap_stat)
-# pdf(file = "results/Paper_illustratios/kmean_lasso_grpcolor.pdf")
-res_km_r <- eclust(scale(proteins), "kmeans", k = 4) 
+# pdf(file = "results/Illustrations/proteomics_kmean_k4.pdf")
+res_km_r <- eclust(scale(proteins %>% dplyr::select(-patient_id)), "kmeans", k = 4) 
 # while (!is.null(dev.list()))  dev.off()
+
+res_km_r <- eclust(scale(proteins %>% dplyr::select(-patient_id)), FUNcluster = "hclust", k = 4, graph = TRUE)
+fviz_cluster(res_km_r, scale(proteins %>% dplyr::select(-patient_id)), ellipse.type = "ellipse", palette = c("#0b5313", "#ec4dd8", "blue", "orange"), ggtheme = theme_minimal())
 ```
 
 ### miRNA data
 ```{r kmeans_miRNA, warning=FALSE, message=FALSE}
-res_km_r <- eclust(scale(miRNA), "kmeans")
+res_km_r <- eclust(scale(miRNA %>% dplyr::select(-patient_id)), "kmeans")
 fviz_gap_stat(res_km_r$gap_stat)
-# pdf(file = "results/Paper_illustratios/kmean_lasso_grpcolor.pdf")
-res_km_r <- eclust(scale(miRNA), "kmeans", k = 3) 
+# pdf(file = "results/Illustrations/transcriptomics_kmean_k4.pdf")
+res_km_r <- eclust(scale(miRNA %>% dplyr::select(-patient_id)), "kmeans", k = 3)
+# while (!is.null(dev.list()))  dev.off()
+
+res_km_r <- eclust(scale(miRNA %>% dplyr::select(-patient_id)), FUNcluster = "hclust", k = 4, graph = TRUE)
+fviz_cluster(res_km_r, scale(miRNA %>% dplyr::select(-patient_id)), ellipse.type = "ellipse", palette = c("#0b5313", "#ec4dd8", "blue", "orange"), ggtheme = theme_minimal())
+```
+
+## {-}
+
+```{r zoom-in_heatmap, message=FALSE, fig.cap="Protein expression is differential between groups"}
+# pdf(file = "results/Paper_illustratios/heatmap1_EN_univ_sel_ptn.pdf")
+# Heatmap(as.matrix(miRNA %>% dplyr::select(-patient_id)), 
+#         row_labels = rownames(miRNA %>% dplyr::select(-patient_id)),
+#         column_labels = colnames(miRNA %>% dplyr::select(-patient_id)),
+#         cluster_rows = TRUE,
+#         row_names_max_width = unit(6, "cm"),
+#         cluster_columns = FALSE,
+#         row_names_rot = 15,
+#         row_names_gp = gpar(fontsize = 3)) # Text size for row names
 # while (!is.null(dev.list()))  dev.off()
 ```
+
+
