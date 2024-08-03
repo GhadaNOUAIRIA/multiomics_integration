@@ -246,7 +246,7 @@ beta1 <- proteins %>%
 pd1 <- metadata %>% 
   # dplyr::slice(1:33) %>%
   # filter(ibd_binary == "1" & cca_binary == "0") %>%
-  select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
+  select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, crp, IgG, IgA, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
   as.data.frame()
 
 # pdf(file = "results/illustrations/svd_proteins.pdf")
@@ -392,8 +392,9 @@ beta1 <- miRNA %>%
 
 pd1 <- metadata %>% 
   dplyr::slice(1:33) %>%
-  select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
+  select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, crp, IgG, IgA, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
   as.data.frame()
+  
 # pdf(file = "results/svd_miRNA.pdf")
 champ.SVD(beta = beta1, pd = pd1)
  # while (!is.null(dev.list()))  dev.off()
@@ -523,7 +524,7 @@ beta1 <- log2_metabolites %>%
 
 pd1 <- metadata %>% 
   # dplyr::slice(1:33) %>%
-  select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
+  select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, crp, IgG, IgA, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
   as.data.frame()
 
 # pdf(file = "results/svd_metabolomics.pdf")
