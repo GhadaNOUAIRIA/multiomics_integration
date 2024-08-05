@@ -6,6 +6,7 @@ output:
   html_document:
     toc: TRUE
     toc_float: TRUE
+    code_folding: "hide"
 ---
 
 ```{r setup, include=FALSE}
@@ -15,12 +16,22 @@ knitr::opts_chunk$set(echo = TRUE)
 # To do
 
 1.
+
 Spend more time reading about and using the turtorial to better understand the functions.
+
+Test the manual network.
+
 Create a network that is accurate and optimized.
 
+Find relevant metadata for miRNA (https://ccb-compute2.cs.uni-saarland.de/mieaa/) and proteins.
+
+Figure out how to make the figures knit properly.
+
 2.
-Interpret the results of the network and extract relevant variables for certain clinical features
-Analyse the extracted relevant variables and make an enrichment analysis by matching with compound metadata and correlating to external tools = Finding biological pathways
+
+Interpret the results of the network and extract relevant variables for certain clinical features.
+
+Run an enrichment analysis by matching variables with compound metadata.
 
 The first part has to be done once while the second part needs to be iterated for every omics and all of them together.
 
@@ -28,33 +39,58 @@ The first part has to be done once while the second part needs to be iterated fo
 
 In this analysis we are using the Weighted Gene Correlation Network Analysis (WGCNA) to analyse how our variables can be grouped together. The analysis will be carried out for each omics separately and for all together with a scaled (Z-score) and concatenated matrix.
 
-Progress: miRNA initial attempt
-
+**WGCNA Application to Proteomic and Metabolomic Data Analysis**
 
 Originally WGCNA was developed only for gene expression. However, with proper missing data imputation and normalization proteins and metabolites can be studied as well.
 
-The correlation between variables can be either positive or negative. In a signed analysis the negative correlation is not considered while in an unsigned analysis the absolute value of the correlation is considered making positive and negative correlation equal. The article recommend to construct a signed network.
+The correlation between variables can be either positive or negative. In a signed analysis the negative correlation is not considered while in an unsigned analysis the absolute value of the correlation is considered making positive and negative correlation equal. This article recommends to construct a signed network.
 
 Article: https://www.sciencedirect.com/science/article/pii/S0076687916302890
 
+**Horvath tutorial**
+
 Parameters:
-In function blockwiseModules()
-  Network type: signed or unsigned
-  Soft threshold power: larger number amplifies high correlations
-  Minimal module size: the least number of variables that can constitute a module
+1. 
+cutreeStatic() - cutHeight = - Removes outliers
 
-# Horvath tutorial
+2.a
+blockwiseModules() - power = - Set soft threshold power with pickSoftThreshold()
+blockwiseModules() - TOMType = - Choose network type (unsigned or signed)
+blockwiseModules() - minModuleSize = - Choose minimal size of modules
+blockwiseModules() - deepSplit = - Choose sensitivity for cluster splitting (default = 2)
 
-## 1. Data input
+2.b
+pickSoftThreshold()
+adjacency() - Correlation matrix between all variables to the power of the soft threshold
+TOMsimilarity() - Transformation of the adjacency matrix to reduce noise and spurious associations
+hclust() - Create gene tree
+cutreeDynamic() - Create modules
+moduleEigengenes() - Calculate module eigengenes to create dendrogram
+mergeCloseModules() - Merge modules with similar expression profiles according to dendrogram
 
-### Read the libraries
+3.
+labeledHeatmap() - Choose which clinical traits to investigate for which modules (gene significance = gene-trait correlation; module membership = gen-module_eigengene correlation)
+Combine each trait analysis with compound metadata
+
+4.
+Subset interesting modules for annotation/enrichment analysis
+
+5. 
+Visualize gene network with heatmap and dendrogram
+Visualize module network for a clinical variable with heatmap and dendrogram
+
+6.
+Export gene network for external visualization
+
+## Read the libraries
 
 ```{r read_the_libraries}
 library(tidyverse)
 library(WGCNA)
+library(DT)
 ```
 
-### Set prequisites
+## Set prequisites
 
 ```{r prequisites}
 # Setting string not as factor - Prequisite for algorithm
@@ -64,12 +100,10 @@ options(stringsAsFactors = FALSE)
 enableWGCNAThreads()
 ```
 
-### Load the data
+## Load the data
 
 The omics data comes in a uniform format with each row representing a patient/sample and each column representing a compound/feature/variable except the first column which contains the patient ID's.
-
 The metadata has been cleaned for the variables of interest so that they are represented by new binary columns. See the preprocessing script for details.
-
 ```{r load_data}
 setwd("~/R/FoLäk2")
 metabolites <- read_csv("results/metabolite_preprocessed.csv")
@@ -78,68 +112,95 @@ miRNA <- read_csv("results/miRNA_preprocessed.csv")
 metadata <- read_csv("results/metadata_preprocessed.csv")
 ```
 
-### Prepare the data
+## Prepare the data
 
 The patient ID column is set as the rownames to keep track of the rows.
-The metabolite data is log2-transformed.
+The metabolite data was probably not log2 transformed but only scaled with 1 as the median and all other values proportional.
+-> The metabolite data needs to be log2 transformed
 The numerical columns of interest are selected in the metadata
-
-```{r prepare_data}
+```{r format_data}
 miRNA <- miRNA %>% 
-  column_to_rownames(var = "patient_id")
+  column_to_rownames(var = "patient_id") %>% 
+  slice(1:33)
 
 proteins <- proteins %>% 
-  column_to_rownames(var = "patient_id")
+  column_to_rownames(var = "patient_id") %>% 
+  slice(1:33)
 
 metabolites <- metabolites %>% 
   column_to_rownames(var = "patient_id") %>% 
-  log2()
+  log2() %>% 
+  slice(1:33)
 
 metadata <- metadata %>% 
-  select(patient_id, cca_binary, ibd_binary, fibrosis_binary, alp_binary, bilirubin_binary, sex_binary, age, bmi, crp, IgG, IgA)
+  select(patient_id, cca_binary, ibd_binary, fibrosis_binary, alp, alp_binary, bilirubin, bilirubin_binary)
+```
+
+We concatenate the omics data.
+```{r concatenate_data}
+multi_omics <- cbind(
+  scale(miRNA), 
+  scale(proteins), 
+  scale(metabolites)
+) %>% 
+  as.data.frame() %>% 
+  select_if(~ n_distinct(.x) > 1)
 ```
 
 This function checks if there are any columns with too many missing values.
-
 Result: There are no such columns
-
 ```{r check_missing_values}
 gsg = goodSamplesGenes(miRNA, verbose = 3);
 gsg$allOK
+
+gsg = goodSamplesGenes(proteins, verbose = 3);
+gsg$allOK
+
+gsg = goodSamplesGenes(metabolites, verbose = 3);
+gsg$allOK
+
+gsg = goodSamplesGenes(multi_omics, verbose = 3);
+gsg$allOK
 ```
 
-This initial plot groups the samples with hierarchical clustering. The abline is set manually after looking at the plot.
+# miRNA {.tabset}
 
-```{r check_outliers}
+## 1. Data input
+
+This initial plot groups the samples with hierarchical clustering to check for outliers. The abline is set manually after looking at the plot.
+```{r miRNA_visualise_samples}
 sampleTree = hclust(dist(miRNA), method = "average");
 # Plot the sample tree: Open a graphic output window of size 12 by 9 inches
 # The user should change the dimensions if the window is too large or too small.
-sizeGrWindow(12,9)
+# sizeGrWindow(12,9)
 #pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
 par(cex = 0.6);
 par(mar = c(0,4,2,0))
 plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, 
      cex.axis = 1.5, cex.main = 2)
 # Plot a line to show the cut
-abline(h = 75, col = "red");
+abline(h = 70, col = "red");
 ```
 
-This function divides the data into the clusters that can be seen in the plot above. Then only the main cluster is kept and the data is referred to as fmiRNA.
-
-```{r filter_data}
+This function divides the data into the clusters that can be seen in the plot above. Then only the main cluster is kept and the data is referred to as fmiRNA. Any variables that are constant in the filtered dataset are removed.
+```{r miRNA_filter_data}
 # Determine cluster under the line
-clust = cutreeStatic(sampleTree, cutHeight = 75, minSize = 10)
+clust = cutreeStatic(sampleTree, cutHeight = 70, minSize = 10)
 table(clust)
 # clust 1 contains the samples we want to keep.
 keepSamples = (clust==1)
 fmiRNA = miRNA[keepSamples, ]
+
+# Remove the constant variables in our filtered dataset
+fmiRNA <- fmiRNA %>% 
+    select_if(~ n_distinct(.x) > 1)
+
 nGenes = ncol(fmiRNA)
 nSamples = nrow(fmiRNA)
 ```
 
 The metadata need to be matched to the main cluster that was kept and it is referred to as fmetadata.
-
-```{r filter_metadata}
+```{r miRNA_filter_metadata}
 # Form a data frame analogous to expression data that will hold the clinical traits.
 Samples = rownames(fmiRNA);
 traitRows = match(Samples, metadata$patient_id);
@@ -148,9 +209,8 @@ fmetadata <- fmetadata %>% column_to_rownames(var = "patient_id")
 collectGarbage();
 ```
 
-This second plot groups the samples with hierarchichal clustering. The heatmap below show the metadata for each sample where white means low, red means high, and grey means missing entry.
-
-```{r check_traits}
+This second plot groups the filtered samples with hierarchical clustering. The heatmap below show the metadata for each sample where white means low, red means high, and grey means missing entry.
+```{r miRNA_visualise_traits}
 # Re-cluster samples
 sampleTree2 = hclust(dist(fmiRNA), method = "average")
 # Convert traits to a color representation: white means low, red means high, grey means missing entry
@@ -163,15 +223,14 @@ plotDendroAndColors(sampleTree2, traitColors,
 
 ## 2.a Automatic network construction
 
-We set an interval of soft thresholding powers and plot the scale independence and mean connectivity as a function of those powers. The scale independence reaches a peak at power = 4 which we choose as our power.
-
-```{r}
+We set an interval of soft thresholding powers and plot the scale independence and mean connectivity as a function of those powers. The scale independence reaches the plateau around power = 5.
+```{r miRNA_choose_power}
 # Choose a set of soft-thresholding powers
 powers = c(c(1:10), seq(from = 12, to=20, by=2))
 # Call the network topology analysis function
 sft = pickSoftThreshold(fmiRNA, powerVector = powers, verbose = 5)
 # Plot the results:
-sizeGrWindow(9, 5)
+# sizeGrWindow(9, 5)
 par(mfrow = c(1,2));
 cex1 = 0.9;
 # Scale-free topology fit index as a function of the soft-thresholding power
@@ -189,27 +248,10 @@ plot(sft$fitIndices[,1], sft$fitIndices[,5],
 text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
 ```
 
-We create a first network which tells us there are 13 variables with missing values or low variance. We then create the second network with those 13 variables filtered out. It divides our variables into 20 modules
-
-```{r}
-# First model
-
-net0 = blockwiseModules(fmiRNA, power = 4,
-                       TOMType = "signed", minModuleSize = 30,
-                       reassignThreshold = 0, mergeCutHeight = 0.25,
-                       numericLabels = TRUE, pamRespectsDendro = FALSE,
-                       saveTOMs = TRUE,
-                       saveTOMFileBase = "miRNATOM", 
-                       verbose = 3)
-
-# Second model
-
-#View(as.data.frame(net0[["goodGenes"]]))
-
-fmiRNA <- fmiRNA[, net0[["goodGenes"]]]
-
-net = blockwiseModules(fmiRNA, power = 4,
-                       TOMType = "signed", minModuleSize = 30,
+We create a network with our variables divided into 20 modules with outliers in module 0.
+```{r miRNA_create_network}
+net = blockwiseModules(fmiRNA, power = 5,
+                       TOMType = "unsigned", minModuleSize = 30,
                        reassignThreshold = 0, mergeCutHeight = 0.25,
                        numericLabels = TRUE, pamRespectsDendro = FALSE,
                        saveTOMs = TRUE,
@@ -219,9 +261,10 @@ net = blockwiseModules(fmiRNA, power = 4,
 table(net$colors)
 ```
 
-```{r}
+We create the dendrogram for our network.
+```{r miRNA_network_dendrogram}
 # open a graphics window
-sizeGrWindow(12, 9)
+# sizeGrWindow(12, 9)
 # Convert labels to colors for plotting
 mergedColors = labels2colors(net$colors)
 # Plot the dendrogram and the module colors underneath
@@ -232,8 +275,7 @@ plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
 ```
 
 We save some of the results from our network for further analysis. These include the module distribution, its colors, the module eigenvalues, and the dendrogram.
-
-```{r}
+```{r miRNA_save_network}
 moduleLabels = net$colors
 moduleColors = labels2colors(net$colors)
 MEs = net$MEs;
@@ -243,8 +285,7 @@ geneTree = net$dendrograms[[1]];
 ## 3. Relating modules to traits
 
 We calculate the ME values for the modules and subsequently calculate the correlation and p-value in regards to the metadata.
-
-```{r}
+```{r miRNA_calculate_module_eigengenes}
 # Define numbers of genes and samples
 nGenes = ncol(fmiRNA);
 nSamples = nrow(fmiRNA);
@@ -256,21 +297,20 @@ moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
 ```
 
 We create a heatmap of the correlation and p-values that were calculated above. Here we can see which modules are significant for which trait. I identify the module brown (MEbrown) to be correlated with CCA (cca_binary).
-
-```{r}
-sizeGrWindow(10,6)
+```{r miRNA_plot_modules_traits}
+# sizeGrWindow(10,6)
 # Will display correlations and their p-values
 textMatrix =  paste(signif(moduleTraitCor, 2), "\n(",
                            signif(moduleTraitPvalue, 1), ")", sep = "");
 dim(textMatrix) = dim(moduleTraitCor)
-par(mar = c(6, 8.5, 3, 3));
+par(mar = c(0, 8.5, 3, 3));
 # Display the correlation values within a heatmap plot
 labeledHeatmap(Matrix = moduleTraitCor,
                xLabels = names(fmetadata),
                yLabels = names(MEs),
                ySymbols = names(MEs),
                colorLabels = FALSE,
-               colors = greenWhiteRed(50),
+               colors = blueWhiteRed(50),
                textMatrix = textMatrix,
                setStdMargins = FALSE,
                cex.text = 0.5,
@@ -279,9 +319,8 @@ labeledHeatmap(Matrix = moduleTraitCor,
 ```
 
 We calculate the module membership and gene significance of our variables.
-
-```{r}
-# Define variable cca containing the cca column of fmetadata
+```{r miRNA_calculate_MM_GS_cca}
+# Define variable cca containing the CCA column of fmetadata
 cca = as.data.frame(fmetadata$cca_binary);
 names(cca) = "cca"
 # names (colors) of the modules
@@ -301,13 +340,12 @@ names(GSPvalue) = paste("p.GS.", names(cca), sep="");
 ```
 
 We make a scatterplot of the module membership and gene significance of our variables for the module brown.
-
-```{r}
+```{r miRNA_plot_MM_GS_cca}
 module = "brown"
 column = match(module, modNames);
 moduleGenes = moduleColors==module;
 
-sizeGrWindow(7, 7);
+# sizeGrWindow(7, 7);
 par(mfrow = c(1,1));
 verboseScatterplot(abs(geneModuleMembership[moduleGenes, column]),
                    abs(geneTraitSignificance[moduleGenes, 1]),
@@ -320,23 +358,732 @@ verboseScatterplot(abs(geneModuleMembership[moduleGenes, column]),
 ## 5. Visualisation
 
 We create a heatmap that shows the correlation between all of our variables. The bright spots are our modules.
-
-```{r}
+```{r miRNA_plot_variable_dendrogram_heatmap}
 # Calculate topological overlap anew: this could be done more efficiently by saving the TOM
 # calculated during module detection, but let us do it again here.
-dissTOM = 1-TOMsimilarityFromExpr(fmiRNA, power = 6);
+dissTOM = 1-TOMsimilarityFromExpr(fmiRNA, power = 5);
 # Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
 plotTOM = dissTOM^7;
 # Set diagonal to NA for a nicer plot
 diag(plotTOM) = NA;
 # Call the plot function
-sizeGrWindow(9,9)
+# sizeGrWindow(9,9)
 TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes")
 ```
 
+We create a dendrogram and heatmap for the modules in relation to the clinical trait.
+```{r miRNA_plot_module_dendrogram_heatmap_cca}
+# Add the weight to existing module eigengenes
+MET = orderMEs(cbind(MEs, cca))
+# Plot the relationships among the eigengenes and the trait
+par(cex = 0.9)
+plotEigengeneNetworks(MET, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), cex.lab = 0.8, xLabelsAngle
+= 90)
+```
+
+# Proteins {.tabset}
+
+## 1. Data input
+
+This initial plot groups the samples with hierarchical clustering to check for outliers. The abline is set manually after looking at the plot.
+```{r proteins_visualise_samples}
+sampleTree = hclust(dist(proteins), method = "average");
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+# sizeGrWindow(12,9)
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, 
+     cex.axis = 1.5, cex.main = 2)
+# Plot a line to show the cut
+abline(h = 35, col = "red");
+```
+
+This function divides the data into the clusters that can be seen in the plot above. Then only the main cluster is kept and the data is referred to as fproteins. Any variables that are constant in the filtered dataset are removed.
+```{r proteins_filter_data}
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 35, minSize = 10)
+table(clust)
+# clust 1 contains the samples we want to keep.
+keepSamples = (clust==1)
+fproteins = proteins[keepSamples, ]
+
+# Remove the constant variables in our filtered dataset
+fproteins <- fproteins %>% 
+    select_if(~ n_distinct(.x) > 1)
+
+nGenes = ncol(fproteins)
+nSamples = nrow(fproteins)
+```
+
+The metadata need to be matched to the main cluster that was kept and it is referred to as fmetadata.
+```{r proteins_filter_metadata}
+# Form a data frame analogous to expression data that will hold the clinical traits.
+Samples = rownames(fproteins);
+traitRows = match(Samples, metadata$patient_id);
+fmetadata = metadata[traitRows, ];
+fmetadata <- fmetadata %>% column_to_rownames(var = "patient_id")
+collectGarbage();
+```
+
+This second plot groups the filtered samples with hierarchical clustering. The heatmap below show the metadata for each sample where white means low, red means high, and grey means missing entry.
+```{r proteins_visualise_traits}
+# Re-cluster samples
+sampleTree2 = hclust(dist(fproteins), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(fmetadata, signed = FALSE);
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(fmetadata), 
+                    main = "Sample dendrogram and trait heatmap")
+```
+
+## 2.a Automatic network construction
+
+We set an interval of soft thresholding powers and plot the scale independence and mean connectivity as a function of those powers. The scale independence reaches the plateau around power = 4.
+```{r proteins_choose_power}
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(fproteins, powerVector = powers, verbose = 5)
+# Plot the results:
+# sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+We create a network with our variables divided into 4 modules with outliers in module 0.
+```{r proteins_create_network}
+net = blockwiseModules(fproteins, power = 4,
+                       TOMType = "unsigned", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.25,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = "proteinsTOM", 
+                       verbose = 3)
+
+table(net$colors)
+```
+
+We create the dendrogram for our network.
+```{r proteins_network_dendrogram}
+# open a graphics window
+# sizeGrWindow(12, 9)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+```
+
+We save some of the results from our network for further analysis. These include the module distribution, its colors, the module eigenvalues, and the dendrogram.
+```{r proteins_save_network}
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+MEs = net$MEs;
+geneTree = net$dendrograms[[1]];
+```
+
+## 3. Relating modules to traits
+
+We calculate the ME values for the modules and subsequently calculate the correlation and p-value in regards to the metadata.
+```{r proteins_calculate_module_eigengenes}
+# Define numbers of genes and samples
+nGenes = ncol(fproteins);
+nSamples = nrow(fproteins);
+# Recalculate MEs with color labels
+MEs0 = moduleEigengenes(fproteins, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, fmetadata, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+```
+
+We create a heatmap of the correlation and p-values that were calculated above. Here we can see which modules are significant for which trait. I identify the module brown (MEbrown) to be correlated with CCA (cca_binary).
+```{r proteins_plot_modules_traits}
+# sizeGrWindow(10,6)
+# Will display correlations and their p-values
+textMatrix =  paste(signif(moduleTraitCor, 2), "\n(",
+                           signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3));
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(fmetadata),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+```
+
+We calculate the module membership and gene significance of our variables.
+```{r proteins_calculate_MM_GS_alp}
+# Define variable alp containing the ALP column of fmetadata
+alp = as.data.frame(fmetadata$alp_binary);
+names(alp) = "alp"
+# names (colors) of the modules
+modNames = substring(names(MEs), 3)
+
+geneModuleMembership = as.data.frame(cor(fproteins, MEs, use = "p"));
+MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+
+names(geneModuleMembership) = paste("MM", modNames, sep="");
+names(MMPvalue) = paste("p.MM", modNames, sep="");
+
+geneTraitSignificance = as.data.frame(cor(fproteins, alp, use = "p"));
+GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+
+names(geneTraitSignificance) = paste("GS.", names(alp), sep="");
+names(GSPvalue) = paste("p.GS.", names(alp), sep="");
+```
+
+We make a scatterplot of the module membership and gene significance of our variables for the module brown.
+```{r proteins_plot_MM_GS_alp}
+module = "turquoise"
+column = match(module, modNames);
+moduleGenes = moduleColors==module;
+
+# sizeGrWindow(7, 7);
+par(mfrow = c(1,1));
+verboseScatterplot(abs(geneModuleMembership[moduleGenes, column]),
+                   abs(geneTraitSignificance[moduleGenes, 1]),
+                   xlab = paste("Module Membership in", module, "module"),
+                   ylab = "Gene significance for ALP",
+                   main = paste("Module membership vs. gene significance\n"),
+                   cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2, col = module)
+```
+
+## 5. Visualisation
+
+We create a heatmap that shows the correlation between all of our variables. The bright spots are our modules.
+```{r proteins_plot_variable_dendrogram_heatmap}
+# Calculate topological overlap anew: this could be done more efficiently by saving the TOM
+# calculated during module detection, but let us do it again here.
+dissTOM = 1-TOMsimilarityFromExpr(fproteins, power = 4);
+# Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+plotTOM = dissTOM^7;
+# Set diagonal to NA for a nicer plot
+diag(plotTOM) = NA;
+# Call the plot function
+# sizeGrWindow(9,9)
+TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes")
+```
+
+We create a dendrogram and heatmap for the modules in relation to the clinical trait.
+```{r proteins_plot_module_dendrogram_heatmap_alp}
+# Add the weight to existing module eigengenes
+MET = orderMEs(cbind(MEs, alp))
+# Plot the relationships among the eigengenes and the trait
+par(cex = 0.9)
+plotEigengeneNetworks(MET, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), cex.lab = 0.8, xLabelsAngle
+= 90)
+```
+
+# Metabolites {.tabset}
+
+## 1. Data input
+
+This initial plot groups the samples with hierarchical clustering to check for outliers. The abline is set manually after looking at the plot.
+```{r metabolites_visualise_samples}
+sampleTree = hclust(dist(metabolites), method = "average");
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+# sizeGrWindow(12,9)
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, 
+     cex.axis = 1.5, cex.main = 2)
+# Plot a line to show the cut
+abline(h = 62, col = "red");
+```
+
+This function divides the data into the clusters that can be seen in the plot above. Then only the main cluster is kept and the data is referred to as fmetabolites. Any variables that are constant in the filtered dataset are removed.
+```{r metabolites_filter_data}
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 62, minSize = 10)
+table(clust)
+# clust 1 contains the samples we want to keep.
+keepSamples = (clust==1)
+fmetabolites = metabolites[keepSamples, ]
+
+# Remove the constant variables in our filtered dataset
+fmetabolites <- fmetabolites %>% 
+    select_if(~ n_distinct(.x) > 1)
+
+nGenes = ncol(fmetabolites)
+nSamples = nrow(fmetabolites)
+```
+
+The metadata need to be matched to the main cluster that was kept and it is referred to as fmetadata.
+```{r metabolites_filter_metadata}
+# Form a data frame analogous to expression data that will hold the clinical traits.
+Samples = rownames(fmetabolites);
+traitRows = match(Samples, metadata$patient_id);
+fmetadata = metadata[traitRows, ];
+fmetadata <- fmetadata %>% column_to_rownames(var = "patient_id")
+collectGarbage();
+```
+
+This second plot groups the filtered samples with hierarchical clustering. The heatmap below show the metadata for each sample where white means low, red means high, and grey means missing entry.
+```{r metabolites_visualise_traits}
+# Re-cluster samples
+sampleTree2 = hclust(dist(fmetabolites), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(fmetadata, signed = FALSE);
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(fmetadata), 
+                    main = "Sample dendrogram and trait heatmap")
+```
+
+## 2.a Automatic network construction
+
+We set an interval of soft thresholding powers and plot the scale independence and mean connectivity as a function of those powers. The scale independence reaches the plateau around power = 5.
+```{r metabolites_choose_power}
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(fmetabolites, powerVector = powers, verbose = 5)
+# Plot the results:
+# sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+We create a network with our variables divided into 8 modules with outliers in module 0.
+```{r metabolites_create_network}
+net = blockwiseModules(fmetabolites, power = 5,
+                       TOMType = "unsigned", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.25,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = "metabolitesTOM", 
+                       verbose = 3)
+
+table(net$colors)
+```
+
+We create the dendrogram for our network.
+```{r metabolites_network_dendrogram}
+# open a graphics window
+# sizeGrWindow(12, 9)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+```
+
+We save some of the results from our network for further analysis. These include the module distribution, its colors, the module eigenvalues, and the dendrogram.
+```{r metabolites_save_network}
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+MEs = net$MEs;
+geneTree = net$dendrograms[[1]];
+```
+
+## 3. Relating modules to traits
+
+We calculate the ME values for the modules and subsequently calculate the correlation and p-value in regards to the metadata.
+```{r metabolites_calculate_module_eigengenes}
+# Define numbers of genes and samples
+nGenes = ncol(fmetabolites);
+nSamples = nrow(fmetabolites);
+# Recalculate MEs with color labels
+MEs0 = moduleEigengenes(fmetabolites, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, fmetadata, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+```
+
+We create a heatmap of the correlation and p-values that were calculated above. Here we can see which modules are significant for which trait. I identify the module brown (MEbrown) to be correlated with bilirubin (bilirubin).
+```{r metabolites_plot_modules_traits}
+# sizeGrWindow(10,6)
+# Will display correlations and their p-values
+textMatrix =  paste(signif(moduleTraitCor, 2), "\n(",
+                           signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3));
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(fmetadata),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+```
+
+We calculate the module membership and gene significance of our variables.
+```{r metabolites_calculate_MM_GS_bilirubin}
+# Define variable bilirubin containing the bilirubin column of fmetadata
+bilirubin = as.data.frame(fmetadata$bilirubin);
+names(bilirubin) = "bilirubin"
+# names (colors) of the modules
+modNames = substring(names(MEs), 3)
+
+geneModuleMembership = as.data.frame(cor(fmetabolites, MEs, use = "p"));
+MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+
+names(geneModuleMembership) = paste("MM", modNames, sep="");
+names(MMPvalue) = paste("p.MM", modNames, sep="");
+
+geneTraitSignificance = as.data.frame(cor(fmetabolites, bilirubin, use = "p"));
+GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+
+names(geneTraitSignificance) = paste("GS.", names(bilirubin), sep="");
+names(GSPvalue) = paste("p.GS.", names(bilirubin), sep="");
+```
+
+We make a scatterplot of the module membership and gene significance of our variables for the module brown.
+```{r metabolites_plot_MM_GS_bilirubin}
+module = "turquoise"
+column = match(module, modNames);
+moduleGenes = moduleColors==module;
+
+# sizeGrWindow(7, 7);
+par(mfrow = c(1,1));
+verboseScatterplot(abs(geneModuleMembership[moduleGenes, column]),
+                   abs(geneTraitSignificance[moduleGenes, 1]),
+                   xlab = paste("Module Membership in", module, "module"),
+                   ylab = "Gene significance for bilirubin",
+                   main = paste("Module membership vs. gene significance\n"),
+                   cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2, col = module)
+```
+
+To annotate the metabolites in the turquoise module we read the metabolite metadata. Thereafter we match our metabolites with the metadata and save the list as probes2annot.
+```{r metabolites_read_metadata}
+setwd("~/R/FoLäk2")
+annot <- read_csv("data/metadata_metabolomics.csv")
+
+dim(annot)
+names(annot)
+probes = names(fmetabolites)
+probes2annot = match(probes, annot$`COMP ID`)
+# The following is the number or probes without annotation:
+sum(is.na(probes2annot))
+# Should return 0.
+```
+
+We create a new annotated data frame with the relevant metadata for our metabolites together with their module color, gene significance and module membership metrics calculated with the network.
+```{r metabolites_annotation}
+# Create the starting data frame
+geneInfo0 = data.frame(COMP_ID = probes,
+                      BIOCHEMICAL = annot$BIOCHEMICAL[probes2annot], 
+                      SUPER_PATHWAY = annot$`SUPER PATHWAY`[probes2annot],
+                      SUB_PATHWAY = annot$`SUB PATHWAY`[probes2annot], 
+                      PATHWAY_SORTORDER = annot$`PATHWAY SORTORDER`[probes2annot],
+                      moduleColor = moduleColors,
+                      geneTraitSignificance,
+                      GSPvalue)
+# Order modules by their significance for bilirubin
+modOrder = order(-abs(cor(MEs, bilirubin, use = "p")));
+# Add module membership information in the chosen order
+for (mod in 1:ncol(geneModuleMembership))
+{
+  oldNames = names(geneInfo0)
+  geneInfo0 = data.frame(geneInfo0, geneModuleMembership[, modOrder[mod]], 
+                         MMPvalue[, modOrder[mod]]);
+  names(geneInfo0) = c(oldNames, paste("MM.", modNames[modOrder[mod]], sep=""),
+                       paste("p.MM.", modNames[modOrder[mod]], sep=""))
+}
+# Order the genes in the geneInfo variable first by module color, then by geneTraitSignificance
+geneOrder = order(geneInfo0$moduleColor, -abs(geneInfo0$GS.bilirubin));
+geneInfo = geneInfo0[geneOrder, ]
+```
+
+In this analysis we can see which biochemical pathways are represented by the most metabolites in the turquoise module. Thus, these pathways has an effect on the bilirubin levels of PSC patients.
+```{r metabolites_pathways_bilirubin}
+datatable(geneInfo %>% 
+  select(1:10) %>% 
+  filter(moduleColor == "turquoise") %>% 
+  group_by(SUB_PATHWAY) %>% 
+  summarise(metabolites = n()) %>% 
+  arrange(desc(metabolites)))
+```
+
+## 5. Visualisation
+
+We create a heatmap that shows the correlation between all of our variables. The bright spots are our modules.
+```{r metabolites_plot_variable_dendrogram_heatmap}
+# Calculate topological overlap anew: this could be done more efficiently by saving the TOM
+# calculated during module detection, but let us do it again here.
+dissTOM = 1-TOMsimilarityFromExpr(fmetabolites, power = 5);
+# Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+plotTOM = dissTOM^7;
+# Set diagonal to NA for a nicer plot
+diag(plotTOM) = NA;
+# Call the plot function
+# sizeGrWindow(9,9)
+TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes")
+```
+
+We create a dendrogram and heatmap for the modules in relation to the clinical trait.
+```{r metabolites_plot_module_dendrogram_heatmap_bilirubin}
+# Add the weight to existing module eigengenes
+MET = orderMEs(cbind(MEs, bilirubin))
+# Plot the relationships among the eigengenes and the trait
+par(cex = 0.9)
+plotEigengeneNetworks(MET, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), cex.lab = 0.8, xLabelsAngle
+= 90)
+```
+
+# Multi-omics {.tabset}
+
+## 1. Data input
+
+This initial plot groups the samples with hierarchical clustering to check for outliers. The abline is set manually after looking at the plot.
+```{r multi_omics_visualise_samples}
+sampleTree = hclust(dist(multi_omics), method = "average");
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+# sizeGrWindow(12,9)
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, 
+     cex.axis = 1.5, cex.main = 2)
+# Plot a line to show the cut
+abline(h = 85, col = "red");
+```
+
+This function divides the data into the clusters that can be seen in the plot above. Then only the main cluster is kept and the data is referred to as fmulti_omics. Any variables that are constant in the filtered dataset are removed.
+```{r multi_omics_filter_data}
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 85, minSize = 10)
+table(clust)
+# clust 1 contains the samples we want to keep.
+keepSamples = (clust==1)
+fmulti_omics = multi_omics[keepSamples, ]
+
+# Remove the constant variables in our filtered dataset
+fmulti_omics <- fmulti_omics %>% 
+    select_if(~ n_distinct(.x) > 1)
+
+nGenes = ncol(fmulti_omics)
+nSamples = nrow(fmulti_omics)
+```
+
+The metadata need to be matched to the main cluster that was kept and it is referred to as fmetadata.
+```{r multi_omics_filter_metadata}
+# Form a data frame analogous to expression data that will hold the clinical traits.
+Samples = rownames(fmulti_omics);
+traitRows = match(Samples, metadata$patient_id);
+fmetadata = metadata[traitRows, ];
+fmetadata <- fmetadata %>% column_to_rownames(var = "patient_id")
+collectGarbage();
+```
+
+This second plot groups the filtered samples with hierarchical clustering. The heatmap below show the metadata for each sample where white means low, red means high, and grey means missing entry.
+```{r multi_omics_visualise_traits}
+# Re-cluster samples
+sampleTree2 = hclust(dist(fmulti_omics), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(fmetadata, signed = FALSE);
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(fmetadata), 
+                    main = "Sample dendrogram and trait heatmap")
+```
+
+## 2.a Automatic network construction
+
+We set an interval of soft thresholding powers and plot the scale independence and mean connectivity as a function of those powers. The scale independence reaches the plateau around power = 4.
+```{r multi_omics_choose_power}
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(fmulti_omics, powerVector = powers, verbose = 5)
+# Plot the results:
+# sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+We create a network with our variables divided into 29 modules with outliers in module 0.
+```{r multi_omics_create_network}
+net = blockwiseModules(fmulti_omics, power = 4,
+                       TOMType = "unsigned", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.25,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = "multi_omicsTOM", 
+                       verbose = 3)
+
+table(net$colors)
+```
+
+We create the dendrogram for our network.
+```{r multi_omics_network_dendrogram}
+# open a graphics window
+# sizeGrWindow(12, 9)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+```
+
+We save some of the results from our network for further analysis. These include the module distribution, its colors, the module eigenvalues, and the dendrogram.
+```{r multi_omics_save_network}
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+MEs = net$MEs;
+geneTree = net$dendrograms[[1]];
+```
+
+## 3. Relating modules to traits
+
+We calculate the ME values for the modules and subsequently calculate the correlation and p-value in regards to the metadata.
+```{r multi_omics_calculate_module_eigengenes}
+# Define numbers of genes and samples
+nGenes = ncol(fmulti_omics);
+nSamples = nrow(fmulti_omics);
+# Recalculate MEs with color labels
+MEs0 = moduleEigengenes(fmulti_omics, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, fmetadata, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+```
+
+We create a heatmap of the correlation and p-values that were calculated above. Here we can see which modules are significant for which trait. I identify the module brown (MEbrown) to be correlated with bilirubin (bilirubin).
+```{r multi_omics_plot_modules_traits}
+# sizeGrWindow(10,6)
+# Will display correlations and their p-values
+textMatrix =  paste(signif(moduleTraitCor, 2), "\n(",
+                           signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3));
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(fmetadata),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+```
+
+We calculate the module membership and gene significance of our variables.
+```{r multi_omics_calculate_MM_GS_bilirubin}
+# Define variable bilirubin containing the bilirubin column of fmetadata
+bilirubin = as.data.frame(fmetadata$bilirubin);
+names(bilirubin) = "bilirubin"
+# names (colors) of the modules
+modNames = substring(names(MEs), 3)
+
+geneModuleMembership = as.data.frame(cor(fmulti_omics, MEs, use = "p"));
+MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+
+names(geneModuleMembership) = paste("MM", modNames, sep="");
+names(MMPvalue) = paste("p.MM", modNames, sep="");
+
+geneTraitSignificance = as.data.frame(cor(fmulti_omics, bilirubin, use = "p"));
+GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+
+names(geneTraitSignificance) = paste("GS.", names(bilirubin), sep="");
+names(GSPvalue) = paste("p.GS.", names(bilirubin), sep="");
+```
+
+We make a scatterplot of the module membership and gene significance of our variables for the module brown.
+```{r multi_omics_plot_MM_GS_bilirubin}
+module = "yellow"
+column = match(module, modNames);
+moduleGenes = moduleColors==module;
+
+# sizeGrWindow(7, 7);
+par(mfrow = c(1,1));
+verboseScatterplot(abs(geneModuleMembership[moduleGenes, column]),
+                   abs(geneTraitSignificance[moduleGenes, 1]),
+                   xlab = paste("Module Membership in", module, "module"),
+                   ylab = "Gene significance for bilirubin",
+                   main = paste("Module membership vs. gene significance\n"),
+                   cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2, col = module)
+```
+
+## 5. Visualisation
+
+We create a heatmap that shows the correlation between all of our variables. The bright spots are our modules.
+```{r multi_omics_plot_variable_dendrogram_heatmap}
+# Calculate topological overlap anew: this could be done more efficiently by saving the TOM
+# calculated during module detection, but let us do it again here.
+dissTOM = 1-TOMsimilarityFromExpr(fmulti_omics, power = 5);
+# Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+plotTOM = dissTOM^7;
+# Set diagonal to NA for a nicer plot
+diag(plotTOM) = NA;
+# Call the plot function
+# sizeGrWindow(9,9)
+TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes")
+```
+
+We create a dendrogram and heatmap for the modules in relation to the clinical trait.
+```{r multi_omics_plot_module_dendrogram_heatmap_bilirubin}
+# Add the weight to existing module eigengenes
+MET = orderMEs(cbind(MEs, bilirubin))
+# Plot the relationships among the eigengenes and the trait
+par(cex = 0.9)
+plotEigengeneNetworks(MET, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), cex.lab = 0.8, xLabelsAngle
+= 90)
+```
+
 # Conclusions
-
-The metabolite data was probably not log2 transformed but only scaled with 1 as the median and all other values proportional.
--> The metabolite data needs to be log2 transformed
-
-
