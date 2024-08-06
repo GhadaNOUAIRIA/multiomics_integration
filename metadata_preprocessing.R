@@ -33,20 +33,19 @@ metadata <- metadata %>%
       .default = NA),
     fibrosis_binary = case_when(
       fibrosis %in% c("1", "2", "1-2") ~ 0,
-      fibrosis %in% c("3", "4", "3-4", "cirros", "2?3?") ~ 1, # The value on row 29 (fibrosis = 2?3?) was considered high
+      fibrosis %in% c("3", "4") ~ 1,
       .default = NA),
     sex_binary = case_when(
       sex == "M" ~ 0,
       sex == "F" ~ 1,
       sex == NA ~ NA),
-    alp = as.numeric(alp), 
     alp_binary = case_when(
       alp < 2.85 ~ 0,
       alp >= 2.85 ~ 1,
       .default = NA),
     bilirubin_binary = case_when(   
-      bilirubin < 20 ~ 0,
-      bilirubin >= 20 ~ 1, # Bilirubin == 20 as high
+      bilirubin <= 20 ~ 0, # Bilirubin == 20 as low
+      bilirubin > 20 ~ 1,
       .default = NA),
     across('crohn_or_uc', str_replace, 'ej IBD', 'N'), 
     across('crohn_or_uc', str_replace, 'Crohns', 'CROHNS'), 
