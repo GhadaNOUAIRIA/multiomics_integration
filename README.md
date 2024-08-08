@@ -8,3 +8,4 @@ Downstream analysis consists of :
 2. Univariate analysis and network analysis
 3. Data integration using mixOmics
 4. Network analysis of integrated data
+5. Enrichment analysis of WGCNA results
