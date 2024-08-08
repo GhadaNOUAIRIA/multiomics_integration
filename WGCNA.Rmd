@@ -1,6 +1,6 @@
 ---
 title: "WGCNA analysis of PSC patients"
-author: "William Wu"
+author: "William Wu, Ghada Nouairia"
 date: "2024-08-07"
 output: 
   html_document:
