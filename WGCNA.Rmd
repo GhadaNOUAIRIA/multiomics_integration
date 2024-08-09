@@ -13,30 +13,6 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# To do
-
-1.
-
-Spend more time reading about and using the tutorial to better understand the functions.
-
-Test the manual network.
-
-Create a network that is accurate and optimized.
-
-Find relevant metadata for miRNA (https://ccb-compute2.cs.uni-saarland.de/mieaa/) and proteins.
-
-Figure out how to make the figures knit properly.
-
-2.
-
-Interpret the results of the network and extract relevant variables for certain clinical features.
-
-Run an enrichment analysis by matching variables with compound metadata.
-https://en.wikipedia.org/wiki/Pathway_analysis
-https://en.wikipedia.org/wiki/Gene_set_enrichment_analysis#:~:text=Gene%20set%20enrichment%20analysis%20(GSEA,phenotypes%20(e.g.%20different%20organism%20growth
-
-The first part has to be done once while the second part needs to be iterated for every omics and all of them together.
-
 # Background
 
 In this analysis we are using the Weighted Gene Correlation Network Analysis (WGCNA) to analyse how our variables can be grouped together. The analysis will be carried out for each omics separately and for all together with a scaled (Z-score) and concatenated matrix.
@@ -48,44 +24,6 @@ Originally WGCNA was developed only for gene expression. However, with proper mi
 The correlation between variables can be either positive or negative. In a signed analysis the negative correlation is not considered while in an unsigned analysis the absolute value of the correlation is considered making positive and negative correlation equal. This article recommends to construct a signed network.
 
 Article: https://www.sciencedirect.com/science/article/pii/S0076687916302890
-
-**Horvath tutorial**
-
-Parameters:
-0.
-nearZeroVar() - freqCut =, uniqueCut =
-
-1. 
-cutreeStatic() - cutHeight = - Removes outliers
-
-2.a
-blockwiseModules() - power = - Set soft threshold power with pickSoftThreshold()
-blockwiseModules() - TOMType = - Choose network type (unsigned or signed)
-blockwiseModules() - minModuleSize = - Choose minimal size of modules
-blockwiseModules() - deepSplit = - Choose sensitivity for cluster splitting (default = 2)
-
-2.b
-pickSoftThreshold()
-adjacency() - Correlation matrix between all variables to the power of the soft threshold
-TOMsimilarity() - Transformation of the adjacency matrix to reduce noise and spurious associations
-hclust() - Create gene tree
-cutreeDynamic() - Create modules
-moduleEigengenes() - Calculate module eigengenes to create dendrogram
-mergeCloseModules() - Merge modules with similar expression profiles according to dendrogram
-
-3.
-labeledHeatmap() - Choose which clinical traits to investigate for which modules (gene significance = gene-trait correlation; module membership = gen-module_eigengene correlation)
-Combine each trait analysis with compound metadata
-
-4.
-Subset interesting modules for annotation/enrichment analysis
-
-5. 
-Visualize gene network with heatmap and dendrogram
-Visualize module network for a clinical variable with heatmap and dendrogram
-
-6.
-Export gene network for external visualization
 
 ## Read the libraries
 
@@ -112,7 +50,6 @@ enableWGCNAThreads()
 The omics data comes in a uniform format with each row representing a patient/sample and each column representing a compound/feature/variable except the first column which contains the patient ID's.
 The metadata has been cleaned for the variables of interest so that they are represented by new binary columns. See the preprocessing script for details.
 ```{r load_data}
-setwd("~/R/FoLäk2")
 metabolites <- read_csv("results/metabolite_preprocessed.csv")
 proteins <- read_csv("results/protein_preprocessed.csv")
 miRNA <- read_csv("results/miRNA_preprocessed.csv")
@@ -181,7 +118,6 @@ gsg$allOK
 This initial plot groups the samples with hierarchical clustering to check for outliers. The abline is set manually after looking at the plot.
 ```{r miRNA_visualise_samples}
 # Create the sample tree
-
 sampleTree = hclust(dist(miRNA), method = "average");
 # Plot the sample tree: Open a graphic output window of size 12 by 9 inches
 # The user should change the dimensions if the window is too large or too small.
