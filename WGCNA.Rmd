@@ -134,23 +134,22 @@ plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="",
 
 This function divides the data into the clusters that can be seen in the plot above. Then only the main cluster is kept and the data is referred to as fmiRNA. Any variables that are constant in the filtered dataset are removed.
 ```{r miRNA_filter_data}
+####USE THIS IF YOU WANT TO REMOVE CLUSTERS##########
 # # Determine cluster under the line
 # clust = cutreeStatic(sampleTree, cutHeight = 75, minSize = 10)
 # table(clust)
 # # clust 1 contains the samples we want to keep.
 # keepSamples = (clust==1)
 # fmiRNA = miRNA[keepSamples, ]
-# 
 # # Remove the constant variables in our filtered dataset
-# fmiRNA <- fmiRNA %>% 
+# fmiRNA <- fmiRNA %>%
 #     select_if(~ n_distinct(.x) > 1)
-# 
 # nGenes = ncol(fmiRNA)
 # nSamples = nrow(fmiRNA)
 ```
 
-The metadata need to be matched to the main cluster that was kept and it is referred to as fmetadata.
 ```{r miRNA_filter_metadata}
+###IF cluster were removed, The metadata need to be matched to the main cluster that was kept and it is referred to as fmetadata.
 # # Form a data frame analogous to expression data that will hold the clinical traits.
 # Samples = rownames(fmiRNA);
 # traitRows = match(Samples, metadata$patient_id);
@@ -163,7 +162,6 @@ This second plot groups the filtered samples with hierarchical clustering. The h
 ```{r miRNA_visualise_traits}
 # # Re-cluster samples
 # sampleTree2 = hclust(dist(miRNA), method = "average")
-
 # Convert traits to a color representation: white means low, red means high, grey means missing entry
 traitColors = numbers2colors(metadata, signed = FALSE);
 
