@@ -8,11 +8,8 @@ protein_preprocessing.R
 metadata_preprocessing.R  
 
 ## 2. These scripts analyse the data
-1. Data exploration for each omics
+
 data_exploration.Rmd  
-2. WGCNA network analysis
 WGCNA_multi_omics.Rmd  
-3. mixOmics DIABLO integration
 mixOmics_multi_omics  
-4. Enrichment analysis of variables associated to certain clinical traits
 enrichment_analysis.Rmd  
