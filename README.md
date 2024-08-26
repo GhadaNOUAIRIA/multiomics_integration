@@ -11,5 +11,5 @@ metadata_preprocessing.R
 
 data_exploration.Rmd  
 WGCNA_multi_omics.Rmd  
-mixOmics_multi_omics  
+mixOmics_multi_omics.Rmd  
 enrichment_analysis.Rmd  
