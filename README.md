@@ -1,11 +1,18 @@
 # multiomics_integration
-Using miRNA, proteomics and metabolomics data and their integration to study disease subclassification 
+Using miRNA, proteomics and metabolomics data and their integration to study disease subclassification and insights in PSC patients.
 
-This pipeline reads csv files and pre-processes the data in preparation for analysis and integration
+## 1. These scripts reads the data (csv files) and pre-processes it in preparation for analysis and integration:
+metadata_preprocessing.R
+miRNA_preprocessing.R
+protein_preprocessing.R
+metadata_preprocessing.R
 
-Downstream analysis consists of :
+## 2. These scripts analyse the data
 1. Data exploration for each omics
-2. Univariate analysis and network analysis
-3. Data integration using mixOmics
-4. Network analysis of integrated data
-5. Enrichment analysis of WGCNA results
+   data_exploration.Rmd
+2. WGCNA network analysis
+   WGCNA_multi_omics.Rmd
+3. mixOmics DIABLO integration
+   mixOmics_multi_omics
+4. Enrichment analysis of variables associated to certain clinical traits
+   enrichment_analysis.Rmd
