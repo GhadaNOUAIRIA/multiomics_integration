@@ -8,8 +8,10 @@
 library(tidyverse)
 
 # Read the data
-data1 <- read_csv('data/miRNA_mature_log.csv')
 data <- read_csv('data/miRNA_hairpin_log.csv')
+data1 <- read_csv('data/miRNA_mature_log.csv')
+
+# Hairpin
 
 # Tidy the data
 data <- data %>%
@@ -35,7 +37,7 @@ data %>%
     everything(), 
     names_to = "variable", 
     values_to = "value"
-    ) %>% 
+  ) %>% 
   group_by(variable) %>% 
   summarise(distinct = n_distinct(value)) %>% 
   filter(distinct == 1) %>% 
@@ -47,8 +49,7 @@ data <- data %>%
   # Removing columns with constant values
   select_if(~ n_distinct(.x) > 1)
 
-# Save the data as .csv
-write_csv(data, "results/miRNA_hairpin_preprocessed.csv")
+# Mature
 
 # Tidy the data
 data1 <- data1 %>%
@@ -86,8 +87,7 @@ data1 <- data1 %>%
   # Removing columns with constant values
   select_if(~ n_distinct(.x) > 1)
 
-
-###joining miRNA data from hairpin and mature
+# Join and save the data as .csv
 data %>%
- inner_join(data1, by = "patient_id") %>%
+  inner_join(data1, by = "patient_id") %>%
   write_csv("results/miRNA_preprocessed.csv")
