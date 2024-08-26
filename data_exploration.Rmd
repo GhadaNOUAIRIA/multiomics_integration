@@ -1,7 +1,7 @@
 ---
-title: "Exploratory analysis"
-author: "Ghada Nouairia & William Wu"
-date: "02/07/2024"
+title: "Exploratory analysis of PSC patients"
+author: "Ghada Nouairia, William Wu"
+date: "2024-07-02"
 output:
   bookdown::html_document2:
     toc: yes
@@ -17,6 +17,12 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+# Background
+
+We take an exploratory approach to understand our omics-data better. In the "Data decription" section the creation of the data is explained while the "Data analysis" sections performs several statistical tests, which include Shapiro-Wilks test for normality, T-test and Mann-Whitney U test for significance, and exploratory plots, which include box plots, volcano plots, SVD plots, and MDS plots. Lastly we explore the data with K-means clustering.
+
+## Read the libraries
+
 ```{r Read the libraries, message=FALSE, warning=FALSE}
 library(tidyverse)
 library(rstatix)
@@ -27,16 +33,21 @@ library(limma)
 library(ComplexHeatmap)
 ```
 
+## Load the data
+
 ```{r Load the data, message=FALSE, warning=FALSE}
-setwd("~/projects/PSC_multiomics")
+setwd("~/r/FoLäk2")
+#setwd("~/projects/PSC_multiomics")
 metabolites <- read_csv("results/metabolite_preprocessed.csv")
 proteins <- read_csv("results/protein_preprocessed.csv")
 miRNA <- read_csv("results/miRNA_preprocessed.csv") 
 metadata <- read_csv("results/metadata_preprocessed.csv")
-protein_metadata <- read_csv("data/metadata_OlinkID.csv") %>%
-  pivot_longer(cols = c(-1), names_to = "proteins") %>%
-  pivot_wider(names_from = c(1))
+# protein_metadata <- read_csv("data/metadata_OlinkID.csv") %>%
+#   pivot_longer(cols = c(-1), names_to = "proteins") %>%
+#   pivot_wider(names_from = c(1))
 ```
+
+## Functions
 
 ```{r shapiro-wilk_function, message=FALSE, warning=FALSE}
 apply_shapiro <- function(data, variables, significance) {
@@ -143,192 +154,6 @@ data %>%
   )}
 ```
 
-# Proteins
-## Data description
-The protein data is analysed for 36 samples, 33 patients and 3 healthy donors.
-
-Method:
-Olink’s proximity extension assay (PEA) is used in which each protein are bound by two antibodies with tail DNA oligonucleotides. Upon binding the oligonucleotides hybridize and are extended by DNA polymerase forming a barcode that can be read by qPCR or NGS.
-The PEA was done with Olink Target 96, 7 panels of proteins with 92 proteins each, total of 644 proteins. The panels are “CELL REGULATION”, “DEVELOPMENT”, “IMMUNE RESPONSE”, “INFLAMMATION”, “METABOLISM”, “ONCOLOGY II”, “ONCOLOGY III”, “ORGAN DAMAGE”.
-
-Preprocessing:
-Only one sample did not pass the quality control, sample ID 30 for “ONCOLOGY III”. Several proteins did not pass quality control and were removed (failed in 8% or more samples, see proteins_preprocessing.R).
-The data comes in the unit of normalized protein expression (NPX) values on a log2 scale. They are normalized to interplate controls. 
-
-Links
-Olink Target 96: https://olink.com/products/olink-target-96 Olink preprocessing for qPCR: https://7074596.fs1.hubspotusercontent-na1.net/hubfs/7074596/05-white%20paper%20for%20website/1096-olink-data-normalization-white-paper.pdf Panel proteins: https://www.bioxpedia.com/olink-proteomics/#:~:text=The%20readout%20for%20most%20Olink,equals%20a%20high%20protein%20concentration.
-
-## Data analysis {.tabset}
-### Initial exploration
-```{r proteins_density_plot}
-# Plotting the samples/individuals
-proteins %>%
-  select(-patient_id) %>%
-  t() %>%
-  limma::plotDensities()
-# 
-# Plotting the features/variables
-# proteins %>%
-#   select(-patient_id) %>%
-#   limma::plotDensities()
-```
-
-Checking sample and data for outliers
-```{r proteins_box_plot, message=FALSE, warning=FALSE}
-# Plotting the samples/individuals
-proteins %>% 
-  select(-patient_id) %>% 
-  t() %>% 
-  boxplot(
-    col = palette()[-1],
-    main = "Protein distribtution", ylab = "Protein concentration ")
-
-# Plotting the features/variables
-proteins %>% 
-  select(-patient_id) %>% 
-  boxplot(
-    col = palette()[-1],
-    main = "Protein distribtution", ylab = "Protein concentration ")
-```
-### MSD
-```{r proteins_mds_plot_1, message=FALSE, warning=FALSE}
-# Plotting the features/variables
-proteins %>%
-  select(-patient_id) %>%
-  limma::plotMDS()
-```
-
-### Shapiro-Wilks test
-The number of proteins that do not satisfy normality at p = 0.05 is: 
-```{r proteins_shapiro-wilk_test, message=FALSE, warning=FALSE}
-# Applying Shapirot_Wilks test for normality
-variables <- proteins %>% 
-  select(-patient_id) %>% 
-  names()
-apply_shapiro(proteins, variables, 0.05)
-```
-
-### Mann-Whitney U test and Volcano plot
-```{r proteins_mwu_test, message=FALSE, warning=FALSE}
-mwu <- apply_mwu(proteins, grp1 = c(1:33), grp2 = c(34:36))
-```
-
-The number of significantly differentially expressed proteins at p < 0.05 is `r mwu %>% filter(p.value <= 0.05) %>% nrow()`, of which `r mwu %>% filter(p.value <= 0.05 & fold_change > 0) %>% nrow()` are upregulated and `r mwu %>% filter(p.value <= 0.05 & fold_change < 0) %>% nrow()` are downregulated.
-```{r table, message=FALSE, warning=FALSE}
-datatable(mwu %>%
-            inner_join(protein_metadata %>%
-                         dplyr::select(proteins, Assay),
-                       by = c("variable" = "proteins")) %>%
-                         dplyr::select(-variable) %>%
-                         relocate(Assay),
-          filter =  "top",
-          extensions = 'Buttons', 
-    options = list(dom = 'Bfrtip', 
-                   buttons = c('excel', "csv")))
-```
-
-```{r proteins_volcano_plot, message=FALSE, warning=FALSE}
-# pdf(file = "results/volcano_prot_controls.pdf")
-plot_volcano(mwu, 0.05) 
- # while (!is.null(dev.list()))  dev.off()
-```
-
-### SVD 
-We check the plausible confounders and the studied effects in the data
-```{r proteins_svd, message=FALSE, warning=FALSE, results='hide'}
-beta1 <- proteins %>% 
-  # dplyr::slice(1:33) %>%       ### no Control
-  dplyr::select(-patient_id) %>%
-  t() %>% 
-  as.data.frame() 
-# beta1 <- cbind(beta1[1:11], beta1[13], beta1[29:32])  ####no NoIBD and no CCA
-
-pd1 <- metadata %>% 
-  # dplyr::slice(1:33) %>%
-  # filter(ibd_binary == "1" & cca_binary == "0") %>%
-  select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, crp, IgG, IgA, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
-  as.data.frame()
-
-# pdf(file = "results/illustrations/svd_proteins.pdf")
-champ.SVD(beta = beta1, pd = pd1)
-# while (!is.null(dev.list()))  dev.off()
-```
-
-### MSD multiple dimensions {.tabset}
-#### Effect of age category
-Using MDS plots to check the grouping of the data according to the confouders found by SVD: colors represent age categories: No much effect of age categories
-```{r proteins_mds_plot, message=FALSE, warning=FALSE}
-pal <- brewer.pal(8,"Dark2")
-
-proteins %>%
-  dplyr::select(-patient_id) %>%
-  # dplyr::slice(1:33) %>%
-  t() %>%
-  plotMDS(
-    top=1000,
-    gene.selection="common",
-    dim.plot = c(1, 2),
-    col=pal[factor(metadata$age_cat[1:33])])
-
-proteins %>%
-  dplyr::select(-patient_id) %>%
-  # dplyr::slice(1:33) %>%
-  t() %>%
-  plotMDS(
-    top=1000,
-    gene.selection="common",
-    dim.plot = c(1, 3),
-    col=pal[factor(metadata$age_cat[1:33])])
-
-proteins %>%
-  dplyr::select(-patient_id) %>%
-  # dplyr::slice(1:33) %>%
-  t() %>%
-  plotMDS(
-    top=1000,
-    gene.selection="common",
-    dim.plot = c(2, 3),
-    col=pal[factor(metadata$age_cat[1:33])])
-```
-
-#### Effect of groups
-Looking at the groups (early PSC, CCA, IBD, Advanced and progressing): there is some grouping but not good enough: some feature selection may be needed.
-```{r group_effect3, warning=FALSE}
-proteins %>%
-  dplyr::select(-patient_id) %>%
-  dplyr::slice(1:33) %>%
-  t() %>%
-  plotMDS(
-    top=1000,
-    gene.selection="common",
-    dim.plot = c(1, 2),
-    col=pal[factor(metadata$group[1:33])])
-
-proteins %>%
-  dplyr::select(-patient_id) %>%
-  dplyr::slice(1:33) %>%
-  t() %>%
-  plotMDS(
-    top=1000,
-    gene.selection="common",
-    dim.plot = c(1, 3),
-    col=pal[factor(metadata$group[1:33])])
-
-proteins %>%
-  dplyr::select(-patient_id) %>%
-  dplyr::slice(1:33) %>%
-  t() %>%
-  plotMDS(
-    top=1000,
-    gene.selection="common",
-    dim.plot = c(2, 3),
-    col=pal[factor(metadata$group[1:33])])
-```
-
-
-### {-}
-
-## {-}
 
 # miRNA
 ## Data description
@@ -350,7 +175,7 @@ miRNA %>%
   t() %>% 
   boxplot(
     col = palette()[-1],
-    main = "miRNA distribtution", ylab = "miRNA concentration ")
+    main = "miRNA distribtution", xlab = "Samples", ylab = "miRNA concentration ")
 ```
 
 ### Shapiro-Wilks test
@@ -361,6 +186,20 @@ variables <- miRNA %>%
   select(-patient_id) %>% 
   names()
 apply_shapiro(miRNA, variables, 0.05)
+```
+
+### T-test
+The number of miRNA that were significantly different between PSC samples and controls at p = 0.05 is: 506
+```{r miRNA_t-test}
+# Calculating the p-values
+p_values <- miRNA %>% 
+  apply_ttest(grp1 = c(1:33), grp2 = c(34:36))
+
+# Plotting the distribution
+hist(p_values)
+
+# Calculating the amount of significant proteins
+sum(p_values < 0.05)
 ```
 
 ### Mann-Whitney U test and Volcano plot
@@ -392,7 +231,7 @@ beta1 <- miRNA %>%
 
 pd1 <- metadata %>% 
   dplyr::slice(1:33) %>%
-  select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, crp, IgG, IgA, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
+  select(cca_binary, ibd_binary, crohn_or_uc, fibrosis, fibrosis_binary, alp, alp_binary, bilirubin, bilirubin_binary, group, sex, age, age_cat, bmi, bmi_cat, crp, alat, IgG, IgA, auto_anb, overlap_aih, steroids_other_medic, jaundice, pruritis, fever_chill, fatigue, no_symptoms) %>%
   as.data.frame()
   
 # pdf(file = "results/svd_miRNA.pdf")
@@ -436,6 +275,209 @@ miRNA %>%
     col=pal[factor(metadata$group[1:33])])
 ```
 
+### {-}
+
+## {-}
+
+# Proteins
+
+## Data description
+The protein data is analysed for 36 samples, 33 patients and 3 healthy donors.
+
+Method:
+Olink’s proximity extension assay (PEA) is used in which each protein are bound by two antibodies with tail DNA oligonucleotides. Upon binding the oligonucleotides hybridize and are extended by DNA polymerase forming a barcode that can be read by qPCR or NGS.
+The PEA was done with Olink Target 96, 7 panels of proteins with 92 proteins each, total of 644 proteins. The panels are “CELL REGULATION”, “DEVELOPMENT”, “IMMUNE RESPONSE”, “INFLAMMATION”, “METABOLISM”, “ONCOLOGY II”, “ONCOLOGY III”, “ORGAN DAMAGE”.
+
+Preprocessing:
+Only one sample did not pass the quality control, sample ID 30 for “ONCOLOGY III”. Several proteins did not pass quality control and were removed (failed in 8% or more samples, see proteins_preprocessing.R).
+The data comes in the unit of normalized protein expression (NPX) values on a log2 scale. They are normalized to interplate controls. 
+
+Links
+Olink Target 96: https://olink.com/products/olink-target-96 Olink preprocessing for qPCR: https://7074596.fs1.hubspotusercontent-na1.net/hubfs/7074596/05-white%20paper%20for%20website/1096-olink-data-normalization-white-paper.pdf Panel proteins: https://www.bioxpedia.com/olink-proteomics/#:~:text=The%20readout%20for%20most%20Olink,equals%20a%20high%20protein%20concentration.
+
+## Data analysis {.tabset}
+### Initial exploration
+```{r proteins_density_plot}
+# Plotting the samples/individuals
+proteins %>%
+  select(-patient_id) %>%
+  t() %>%
+  limma::plotDensities()
+# 
+# Plotting the features/variables
+# proteins %>%
+#   select(-patient_id) %>%
+#   limma::plotDensities()
+```
+
+Checking sample and data for outliers
+```{r proteins_box_plot, message=FALSE, warning=FALSE}
+# Plotting the samples/individuals
+proteins %>% 
+  select(-patient_id) %>% 
+  t() %>% 
+  boxplot(
+    col = palette()[-1],
+    main = "Protein distribtution", xlab = "Samples", ylab = "Protein concentration")
+
+# Plotting the features/variables
+proteins %>% 
+  select(-patient_id) %>% 
+  boxplot(
+    col = palette()[-1],
+    main = "Protein distribtution", ylab = "Protein concentration ")
+```
+### MSD
+```{r proteins_mds_plot_1, message=FALSE, warning=FALSE}
+# Plotting the features/variables
+proteins %>%
+  select(-patient_id) %>%
+  limma::plotMDS()
+```
+
+### Shapiro-Wilks test
+The number of proteins that do not satisfy normality at p = 0.05 is: 
+```{r proteins_shapiro-wilk_test, message=FALSE, warning=FALSE}
+# Applying Shapirot_Wilks test for normality
+variables <- proteins %>% 
+  select(-patient_id) %>% 
+  names()
+apply_shapiro(proteins, variables, 0.05)
+```
+
+### T-test
+The number of proteins that were significantly different between PSC samples and controls at p = 0.05 is: 257
+```{r proteins_t-test}
+# Calculating the p-values
+p_values <- proteins %>% 
+  apply_ttest(grp1 = c(1:33), grp2 = c(34:36))
+
+# Plotting the distribution
+hist(p_values)
+
+# Calculating the amount of significant proteins
+sum(p_values < 0.05)
+```
+
+### Mann-Whitney U test and Volcano plot
+```{r proteins_mwu_test, message=FALSE, warning=FALSE}
+mwu <- apply_mwu(proteins, grp1 = c(1:33), grp2 = c(34:36))
+```
+
+The number of significantly differentially expressed proteins at p < 0.05 is `r mwu %>% filter(p.value <= 0.05) %>% nrow()`, of which `r mwu %>% filter(p.value <= 0.05 & fold_change > 0) %>% nrow()` are upregulated and `r mwu %>% filter(p.value <= 0.05 & fold_change < 0) %>% nrow()` are downregulated.
+```{r table, message=FALSE, warning=FALSE}
+# datatable(mwu %>%
+#             inner_join(protein_metadata %>%
+#                          dplyr::select(proteins, Assay),
+#                        by = c("variable" = "proteins")) %>%
+#                          dplyr::select(-variable) %>%
+#                          relocate(Assay),
+#           filter =  "top",
+#           extensions = 'Buttons', 
+#     options = list(dom = 'Bfrtip', 
+#                    buttons = c('excel', "csv")))
+```
+
+```{r proteins_volcano_plot, message=FALSE, warning=FALSE}
+# pdf(file = "results/volcano_prot_controls.pdf")
+plot_volcano(mwu, 0.05) 
+ # while (!is.null(dev.list()))  dev.off()
+```
+
+### SVD 
+We check the plausible confounders and the studied effects in the data
+```{r proteins_svd, message=FALSE, warning=FALSE, results='hide'}
+beta1 <- proteins %>% 
+  # dplyr::slice(1:33) %>%       ### no Control
+  dplyr::select(-patient_id) %>%
+  t() %>% 
+  as.data.frame() 
+# beta1 <- cbind(beta1[1:11], beta1[13], beta1[29:32])  ####no NoIBD and no CCA
+
+pd1 <- metadata %>% 
+  # dplyr::slice(1:33) %>%
+  # filter(ibd_binary == "1" & cca_binary == "0") %>%
+  select(cca_binary, ibd_binary, crohn_or_uc, fibrosis, fibrosis_binary, alp, alp_binary, bilirubin, bilirubin_binary, group, sex, age, age_cat, bmi, bmi_cat, crp, alat, IgG, IgA, auto_anb, overlap_aih, steroids_other_medic, jaundice, pruritis, fever_chill, fatigue, no_symptoms) %>%
+  as.data.frame()
+
+# pdf(file = "results/illustrations/svd_proteins.pdf")
+champ.SVD(beta = beta1, pd = pd1)
+# while (!is.null(dev.list()))  dev.off()
+```
+
+### MSD multiple dimensions {.tabset}
+#### Effect of age category
+Using MDS plots to check the grouping of the data according to the confouders found by SVD: colors represent age categories: No much effect of age categories
+```{r proteins_mds_plot, message=FALSE, warning=FALSE}
+pal <- brewer.pal(8,"Dark2")
+
+proteins %>%
+  dplyr::select(-patient_id) %>%
+  # dplyr::slice(1:33) %>%
+  t() %>%
+  plotMDS(
+    top=1000,
+    gene.selection="common",
+    dim.plot = c(1, 2),
+    col=pal[factor(metadata$alp_binary[1:33])])
+
+proteins %>%
+  dplyr::select(-patient_id) %>%
+  # dplyr::slice(1:33) %>%
+  t() %>%
+  plotMDS(
+    top=1000,
+    gene.selection="common",
+    dim.plot = c(1, 3),
+    col=pal[factor(metadata$alp_binary[1:33])])
+
+proteins %>%
+  dplyr::select(-patient_id) %>%
+  # dplyr::slice(1:33) %>%
+  t() %>%
+  plotMDS(
+    top=1000,
+    gene.selection="common",
+    dim.plot = c(2, 3),
+    col=pal[factor(metadata$alp_binary[1:33])])
+```
+
+#### Effect of groups
+Looking at the groups (early PSC, CCA, IBD, Advanced and progressing): there is some grouping but not good enough: some feature selection may be needed.
+```{r group_effect3, warning=FALSE}
+proteins %>%
+  dplyr::select(-patient_id) %>%
+  dplyr::slice(1:33) %>%
+  t() %>%
+  plotMDS(
+    top=1000,
+    gene.selection="common",
+    dim.plot = c(1, 2),
+    col=pal[factor(metadata$group[1:33])])
+
+proteins %>%
+  dplyr::select(-patient_id) %>%
+  dplyr::slice(1:33) %>%
+  t() %>%
+  plotMDS(
+    top=1000,
+    gene.selection="common",
+    dim.plot = c(1, 3),
+    col=pal[factor(metadata$group[1:33])])
+
+proteins %>%
+  dplyr::select(-patient_id) %>%
+  dplyr::slice(1:33) %>%
+  t() %>%
+  plotMDS(
+    top=1000,
+    gene.selection="common",
+    dim.plot = c(2, 3),
+    col=pal[factor(metadata$group[1:33])])
+```
+
+### {-}
+
 ## {-}
 
 # Metabolites
@@ -477,14 +519,14 @@ log2_metabolites %>%
   t() %>% 
   boxplot(
     col = palette()[-1],
-    main = "Protein distribtution", ylab = "Protein concentration ")
+    main = "Metabolite distribtution", xlab = "Samples", ylab = "Metabolite concentration ")
 
 # Plotting the features/variables
 log2_metabolites %>% 
   select(-patient_id) %>% 
   boxplot(
     col = palette()[-1],
-    main = "Protein distribtution", ylab = "Protein concentration ")
+    main = "Metabolite distribtution", ylab = "Metabolite concentration ")
 ```
 
 ### Shapiro-Wilks test
@@ -495,6 +537,20 @@ variables <- log2_metabolites %>%
   select(-patient_id) %>% 
   names()
 apply_shapiro(log2_metabolites, variables, 0.05)
+```
+
+### T-test
+The number of metabolites that were significantly different between PSC samples and controls at p = 0.05 is: 391
+```{r metabolites_t-test}
+# Calculating the p-values
+p_values <- metabolites %>% 
+  apply_ttest(grp1 = c(1:33), grp2 = c(34:45))
+
+# Plotting the distribution
+hist(p_values)
+
+# Calculating the amount of significant proteins
+sum(p_values < 0.05)
 ```
 
 ### Mann-Whitney U test and Volcano plot
@@ -524,7 +580,7 @@ beta1 <- log2_metabolites %>%
 
 pd1 <- metadata %>% 
   # dplyr::slice(1:33) %>%
-  select(cca_binary, crohn_or_uc, ibd_binary, alp, alp_binary, bilirubin, bilirubin_binary, fibrosis_binary, sex, age, age_cat, bmi, bmi_cat, crp, IgG, IgA, group, auto_anb, alat, overlap_aih, steroids_other_medic, jaudice, pruritis, fever_chill, fatigue, no_symptoms) %>%
+  select(cca_binary, ibd_binary, crohn_or_uc, fibrosis, fibrosis_binary, alp, alp_binary, bilirubin, bilirubin_binary, group, sex, age, age_cat, bmi, bmi_cat, crp, alat, IgG, IgA, auto_anb, overlap_aih, steroids_other_medic, jaundice, pruritis, fever_chill, fatigue, no_symptoms) %>%
   as.data.frame()
 
 # pdf(file = "results/svd_metabolomics.pdf")
@@ -547,7 +603,7 @@ log2_metabolites %>%
     top=1000,
     gene.selection="common",
     dim.plot = c(1, 2),
-    col=pal[factor(metadata$age_cat[1:33])])
+    col=pal[factor(metadata$bilirubin_binary[1:33])])
 
 log2_metabolites %>%
   dplyr::select(-patient_id) %>%
@@ -557,7 +613,7 @@ log2_metabolites %>%
     top=1000,
     gene.selection="common",
     dim.plot = c(1, 3),
-    col=pal[factor(metadata$age_cat[1:33])])
+    col=pal[factor(metadata$bilirubin_binary[1:33])])
 
 log2_metabolites %>%
   dplyr::select(-patient_id) %>%
@@ -567,7 +623,7 @@ log2_metabolites %>%
     top=1000,
     gene.selection="common",
     dim.plot = c(2, 3),
-    col=pal[factor(metadata$age_cat[1:33])])
+    col=pal[factor(metadata$bilirubin_binary[1:33])])
 ```
 Looking at the groups (early PSC, CCA, IBD, Advanced and progressing): there is some grouping but not good enough: some feature selection may be needed.
 
@@ -608,8 +664,33 @@ log2_metabolites %>%
 
 ## {-}
 
-## Unsupervised clustering of the data {.tabset}
-### Metabolomics
+# Unsupervised clustering of the data {.tabset}
+
+## miRNA data
+```{r kmeans_miRNA, warning=FALSE, message=FALSE}
+res_km_r <- eclust(scale(miRNA %>% dplyr::select(-patient_id)), "kmeans")
+fviz_gap_stat(res_km_r$gap_stat)
+# pdf(file = "results/Illustrations/transcriptomics_kmean_k4.pdf")
+res_km_r <- eclust(scale(miRNA %>% dplyr::select(-patient_id)), "kmeans", k = 3)
+# while (!is.null(dev.list()))  dev.off()
+
+res_km_r <- eclust(scale(miRNA %>% dplyr::select(-patient_id)), FUNcluster = "hclust", k = 4, graph = TRUE)
+fviz_cluster(res_km_r, scale(miRNA %>% dplyr::select(-patient_id)), ellipse.type = "ellipse", palette = c("#0b5313", "#ec4dd8", "blue", "orange"), ggtheme = theme_minimal())
+```
+
+## Proteomics data
+```{r kmeans_prot, warning=FALSE, message=FALSE}
+res_km_r <- eclust(scale(proteins %>% dplyr::select(-patient_id)), "kmeans")
+fviz_gap_stat(res_km_r$gap_stat)
+# pdf(file = "results/Illustrations/proteomics_kmean_k4.pdf")
+res_km_r <- eclust(scale(proteins %>% dplyr::select(-patient_id)), "kmeans", k = 4) 
+# while (!is.null(dev.list()))  dev.off()
+
+res_km_r <- eclust(scale(proteins %>% dplyr::select(-patient_id)), FUNcluster = "hclust", k = 4, graph = TRUE)
+fviz_cluster(res_km_r, scale(proteins %>% dplyr::select(-patient_id)), ellipse.type = "ellipse", palette = c("#0b5313", "#ec4dd8", "blue", "orange"), ggtheme = theme_minimal())
+```
+
+## Metabolomics
 Scaled, Best k = 4
 ```{r kmeans_metab, warning=FALSE, message=FALSE}
 res_km_r <- eclust(scale(log2_metabolites %>% dplyr::select(-patient_id)), "kmeans")
@@ -632,30 +713,6 @@ res_km_r <- eclust(log2_metabolites%>% dplyr::select(-patient_id), "kmeans", k =
 
 res_km_r <- eclust(log2_metabolites%>% dplyr::select(-patient_id), FUNcluster = "hclust", k = 4, graph = TRUE)
 fviz_cluster(res_km_r, log2_metabolites%>% dplyr::select(-patient_id), ellipse.type = "ellipse", palette = c("#0b5313", "#ec4dd8", "blue", "orange"), ggtheme = theme_minimal())
-```
-
-### Proteomics data
-```{r kmeans_prot, warning=FALSE, message=FALSE}
-res_km_r <- eclust(scale(proteins %>% dplyr::select(-patient_id)), "kmeans")
-fviz_gap_stat(res_km_r$gap_stat)
-# pdf(file = "results/Illustrations/proteomics_kmean_k4.pdf")
-res_km_r <- eclust(scale(proteins %>% dplyr::select(-patient_id)), "kmeans", k = 4) 
-# while (!is.null(dev.list()))  dev.off()
-
-res_km_r <- eclust(scale(proteins %>% dplyr::select(-patient_id)), FUNcluster = "hclust", k = 4, graph = TRUE)
-fviz_cluster(res_km_r, scale(proteins %>% dplyr::select(-patient_id)), ellipse.type = "ellipse", palette = c("#0b5313", "#ec4dd8", "blue", "orange"), ggtheme = theme_minimal())
-```
-
-### miRNA data
-```{r kmeans_miRNA, warning=FALSE, message=FALSE}
-res_km_r <- eclust(scale(miRNA %>% dplyr::select(-patient_id)), "kmeans")
-fviz_gap_stat(res_km_r$gap_stat)
-# pdf(file = "results/Illustrations/transcriptomics_kmean_k4.pdf")
-res_km_r <- eclust(scale(miRNA %>% dplyr::select(-patient_id)), "kmeans", k = 3)
-# while (!is.null(dev.list()))  dev.off()
-
-res_km_r <- eclust(scale(miRNA %>% dplyr::select(-patient_id)), FUNcluster = "hclust", k = 4, graph = TRUE)
-fviz_cluster(res_km_r, scale(miRNA %>% dplyr::select(-patient_id)), ellipse.type = "ellipse", palette = c("#0b5313", "#ec4dd8", "blue", "orange"), ggtheme = theme_minimal())
 ```
 
 ## {-}
