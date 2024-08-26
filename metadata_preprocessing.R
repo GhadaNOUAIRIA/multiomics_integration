@@ -46,11 +46,27 @@ metadata <- metadata %>%
     bilirubin_binary = case_when(   
       bilirubin <= 20 ~ 0, # Bilirubin == 20 as low
       bilirubin > 20 ~ 1,
-      .default = NA),
+      .default = NA), 
+    aih_binary = case_when(
+      overlap_aih == "N" ~ 0,
+      overlap_aih == "Y" ~ 1,
+      .default = NA), 
+    group_numeric = case_when(
+      group == "NoIBD" ~ 1, 
+      group == "Early" ~ 2, 
+      group == "Progressing" ~ 3, 
+      group == "Advanced" ~ 4, 
+      group == "CCA" ~ 5, 
+      .default = NA
+    ), 
     across('crohn_or_uc', str_replace, 'ej IBD', 'N'), 
     across('crohn_or_uc', str_replace, 'Crohns', 'CROHNS'), 
     across('crp', str_replace, '<', ''), 
     crp = as.numeric(crp), 
+    alat = case_when(
+      alat == "ND" ~ NA,
+      alat != "ND" ~ alat),
+    alat = as.numeric(alat), 
     bmi = as.numeric(bmi), 
     bmi_cat = cut(
       bmi, 
@@ -79,7 +95,8 @@ metadata <- metadata %>%
     ), 
     IgG = as.numeric(str_replace(IgG, ",", ".")), 
     IgA = as.numeric(str_replace(IgA, ",", "."))) %>% 
-  relocate(patient_id, cca, cca_binary, crohn_or_uc, ibd_binary, fibrosis, fibrosis_binary, alp, alp_binary, bilirubin, bilirubin_binary, sex, sex_binary, age, age_cat, bmi, bmi_cat, crp, IgG_IgA_level, IgG, IgA)
+  rename(jaundice = jaudice) %>% 
+  relocate(patient_id, cca, cca_binary, crohn_or_uc, ibd_binary, fibrosis, fibrosis_binary, alp, alp_binary, bilirubin, bilirubin_binary, overlap_aih, aih_binary, group, group_numeric, sex, sex_binary, age, age_cat, bmi, bmi_cat, crp, alat, IgG_IgA_level, IgG, IgA)
 
 # Investigating the distribution in the outcome groups CCA, IBD, and fibrosis excluding controls (n = 3)
 summary(as.factor(metadata$cca_binary))
