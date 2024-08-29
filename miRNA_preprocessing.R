@@ -42,7 +42,7 @@ data %>%
   summarise(distinct = n_distinct(value)) %>% 
   filter(distinct == 1) %>% 
   summarise(n = n())
-## Conclusion: There are 1187 constant columns.
+## Conclusion: There are 412 constant columns.
 
 # Filter the data
 data <- data %>% 
