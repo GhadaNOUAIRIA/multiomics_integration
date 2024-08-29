@@ -195,15 +195,15 @@ To find the optimal number of variables I create a grid for the span of variable
 # # Selecting a range of amount of variables to keep and storing them as a list
 # 
 # test.keepX <- list(
-#                    miRNA = c(seq(20, 80, 10)),
-#                    proteins = c(seq(20, 80, 10)),
-#                    metabolites = c(seq(20, 80, 10))
+#                    miRNA = c(5:9, seq(10, 100, 10)),
+#                    proteins = c(5:9, seq(10, 100, 10)),
+#                    metabolites = c(5:9, seq(10, 100, 10))
 #                   )
 # 
 # # Tuning with loo-crossvalidation, i.e. choosing the variables to keep
 # 
 # start <- Sys.time()
-# tune.diablo <- tune.block.splsda(X_train, fibrosis_train, ncomp = ncomp,
+# tune.diablo <- tune.block.splsda(X_train, alp_train, ncomp = ncomp,
 #                               test.keepX = test.keepX, design = design,
 #                               validation = 'loo',
 #                               BPPARAM = BiocParallel::SnowParam(workers = 16),
@@ -232,6 +232,13 @@ alp_list.keepX <- list(
   proteins = c(50, 20),
   metabolites = c(20, 20)
 )
+
+# test.keepX <- list(
+#                    miRNA = c(5:9, seq(10, 100, 10)),
+#                    proteins = c(5:9, seq(10, 100, 10)),
+#                    metabolites = c(5:9, seq(10, 100, 10))
+#                   )
+# 90, 5; 20, 30; 5, 5
 
 # test.keepX <- list(
 #                    miRNA = c(seq(20, 80, 10)),
@@ -522,10 +529,10 @@ circosPlot(alp_diablo, cutoff = 0.7, line = TRUE,
 #         #save = 'png', name.save = 'diablo-network'
 #         )
 
-# # Clustered image map
+# # # Clustered image map
 # quartz()   # Opens a new window
 # cimDiablo(alp_diablo, color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
-#           comp = 1, margin=c(8,20), legend.position = "right", 
+#           comp = 1, margin=c(8,20), legend.position = "right",
 #           save = 'png', name.save = 'alp_cim')
 ```
 
