@@ -101,6 +101,7 @@ The omics data comes in a uniform format with each row representing a patient/sa
 The metadata has been cleaned for the variables of interest so that they are represented by new binary columns. See the preprocessing script for details.
 ```{r load_data}
 setwd("~/R/FoLäk2")
+#setwd("~/projects/PSC_multiomics")
 metabolites <- read_csv("results/metabolite_preprocessed.csv")
 proteins <- read_csv("results/protein_preprocessed.csv")
 miRNA <- read_csv("results/miRNA_preprocessed.csv")
@@ -116,23 +117,23 @@ The numerical columns of interest are selected in the metadata.
 ```{r format_data}
 miRNA <- miRNA %>% 
   column_to_rownames(var = "patient_id") %>% 
-  slice(1:33)
-miRNA <- miRNA[,-nearZeroVar(miRNA, uniqueCut = 30)] # cuts 1920 miRNA (mature and hairpin) 
+  dplyr::slice(1:33)
+miRNA <- miRNA[,-nearZeroVar(miRNA, uniqueCut = 30)] # cuts 1920 miRNA (hairpin = 943, mature = 977) 
 
 proteins <- proteins %>% 
   column_to_rownames(var = "patient_id") %>% 
-  slice(1:33)
+  dplyr::slice(1:33)
 
 metabolites <- metabolites %>% 
   column_to_rownames(var = "patient_id") %>% 
   log2() %>% 
-  slice(1:33)
-metabolites <- metabolites[,-nearZeroVar(metabolites, uniqueCut = 30)] # cuts 29 metabolites
+  dplyr::slice(1:33)
+metabolites <- metabolites[,-nearZeroVar(metabolites, uniqueCut = 30)] # cuts 28 metabolites
 
 metadata <- metadata %>% 
   column_to_rownames(var = "patient_id") %>% 
   dplyr::select(cca_binary, ibd_binary, fibrosis, fibrosis_binary, alp, alp_binary, bilirubin, bilirubin_binary, group_numeric) %>% 
-  slice(1:33)
+  dplyr::slice(1:33)
 
 # We create a character vector with proprerly formatted names for the clinical traits
 formatted_names <- c("CCA (binary)", "IBD (binary)", "Fibrosis", "Fibrosis (binary)", "ALP", "ALP (binary)", "Bilirubin", "Bilirubin (binary)", "Groups")
