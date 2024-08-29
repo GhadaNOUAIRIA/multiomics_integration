@@ -23,6 +23,8 @@ We take an exploratory approach to understand our omics-data better.
 In the "Data decription" section the creation and preprocessing of the data is explained.  
 In the "Data analysis" section we performs several statistical tests, which include Shapiro-Wilks test for normality, T-test and Mann-Whitney U test for significance, and exploratory plots, which include density plots, box plots, volcano plots, SVD plots, and MDS plots. Lastly we explore the data with K-means clustering.
 
+**Note**: The analysis is now made for the nearZeroVar() filtered miRNA and metabolite data sets. In the chunk prepare_data the corresponding lines can be commented out in order to analyse the unfiltered data sets.
+
 ## Read the libraries
 
 ```{r Read the libraries, message=FALSE}
@@ -61,7 +63,7 @@ log2_metabolites <- cbind(
   metabolites[1], 
   log2(metabolites[2:length(metabolites)]))
 
-# miRNA nearzeroVar
+# Remove low variance in miRNA
 miRNA <- miRNA %>% 
   column_to_rownames(var = "patient_id") %>% 
   select(-nearZeroVar(miRNA %>% dplyr::slice(1:33), uniqueCut = 30)) %>%  # cuts 1920 miRNA (hairpin = 943, mature = 977) 
