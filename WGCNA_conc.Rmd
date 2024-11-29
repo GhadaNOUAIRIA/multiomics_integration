@@ -316,7 +316,7 @@ names(GSPvalue) = paste("p.GS.", names(cca), sep="");
 We make a scatterplot of the module membership and gene significance of our variables for the module brown.
 
 ```{r plot_rel}
-module = "green"
+module = "brown"
 column = match(module, modNames);
 moduleGenes = moduleColors==module;
 
