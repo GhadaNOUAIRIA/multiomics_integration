@@ -33,16 +33,14 @@ data %>%
 ## Checking for constant columns
 data %>% 
   dplyr::select(-1) %>% 
-  pivot_longer(
-    everything(), 
+  pivot_longer(everything(), 
     names_to = "variable", 
-    values_to = "value"
-  ) %>% 
+    values_to = "value") %>% 
   group_by(variable) %>% 
   summarise(distinct = n_distinct(value)) %>% 
   filter(distinct == 1) %>% 
   summarise(n = n())
-## Conclusion: There are 412 constant columns.
+## Conclusion: There are 1187 constant columns.
 
 # Filter the data
 data <- data %>% 
