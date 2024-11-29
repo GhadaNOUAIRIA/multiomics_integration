@@ -24,7 +24,7 @@ data <- data %>%
   Patient_ID = as.numeric(Patient_ID)
   ) %>% 
   arrange(Patient_ID) %>% 
-  rename(patient_id = Patient_ID)
+  dplyr::rename(patient_id = Patient_ID)
 
 # Filter the data
 data <- data %>%
@@ -62,3 +62,4 @@ data %>%
 
 # Save the data as .csv
 write_csv(data, "results/protein_preprocessed.csv")
+
