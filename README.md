@@ -13,3 +13,8 @@ data_exploration.Rmd
 WGCNA_multi_omics.Rmd  
 mixOmics_multi_omics.Rmd  
 enrichment_analysis.Rmd  
+
+## 3. Extra scripts
+
+WGCNA_conc.Rmd (older version of WGCNA_multi_omics.Rmd)
+WGCNA_uniomic.Rmd (using WGCNA on each omic data without concatenation or integration)
