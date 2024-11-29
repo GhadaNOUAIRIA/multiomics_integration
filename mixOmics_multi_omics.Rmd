@@ -1,6 +1,6 @@
 ---
 title: "mixOmics analysis of PSC patients"
-author: "William Wu"
+author: "Ghada Nouairia, William Wu"
 date: "2024-07-25"
 output: 
   html_document:
@@ -36,8 +36,6 @@ The omics data comes in a uniform format with each row representing a patient/sa
 
 The metadata has been cleaned for the variables of interest so that they are represented by new binary columns. See the preprocessing script for details.
 ```{r load_data}
-setwd("~/R/FoLäk2")
-#setwd("~/projects/PSC_multiomics")
 metabolites <- read_csv("results/metabolite_preprocessed.csv")
 proteins <- read_csv("results/protein_preprocessed.csv")
 miRNA <- read_csv("results/miRNA_preprocessed.csv")
@@ -51,79 +49,53 @@ We prepare the data by selecting the PSC patients (n = 33) and filtering the var
 # Assigning test patients by stratification to ensure both outcomes are represented
 test_sample <- c(1, 2, 8, 9)
 
-# miRNA
-miRNA <- miRNA %>% 
-  column_to_rownames(var = "patient_id") %>% 
-  slice(1:33)
+miRNA <- miRNA[2:ncol(miRNA)] %>% 
+         dplyr::slice(1:33)
 miRNA <- miRNA[,-nearZeroVar(miRNA, uniqueCut = 30)] # cuts 1920 miRNA (mature and hairpin) 
-
-# Splitting data
 miRNA_train <- miRNA %>% 
-  slice(-test_sample) %>% 
+  dplyr::slice(-test_sample) %>% 
   as.matrix
-
 miRNA_test <- miRNA %>% 
-  slice(test_sample) %>% 
+  dplyr::slice(test_sample) %>% 
   as.matrix
-
-# Protein
-proteins <- proteins %>% 
-  column_to_rownames(var = "patient_id") %>% 
-  slice(1:33)
-
-# Splitting the data
+proteins <- proteins[2:ncol(proteins)] %>% 
+  dplyr::slice(1:33)
 proteins_train <- proteins %>% 
-  slice(-test_sample) %>% 
+  dplyr::slice(-test_sample) %>% 
   as.matrix
-
 proteins_test <- proteins %>% 
-  slice(test_sample) %>% 
+  dplyr::slice(test_sample) %>% 
   as.matrix
-
-# Metabolite
-metabolites <- metabolites %>% 
-  column_to_rownames(var = "patient_id") %>% 
+metabolites <- metabolites[2:ncol(metabolites)] %>% 
   log2() %>% 
-  slice(1:33)
+  dplyr::slice(1:33)
 metabolites <- metabolites[,-nearZeroVar(metabolites, uniqueCut = 30)] # cuts 29 metabolites
-
-# Splitting the data
 metabolites_train <- metabolites %>% 
-  slice(-test_sample) %>% 
+  dplyr::slice(-test_sample) %>% 
   as.matrix
-
 metabolites_test <- metabolites %>% 
-  slice(test_sample) %>% 
+  dplyr::slice(test_sample) %>% 
   as.matrix
 
-# Metadata
 metadata <- metadata %>% 
-  slice_head(n = 33)
-
-# Splitting the data
+  dplyr::slice_head(n = 33)
 metadata_train <- metadata %>% 
-  slice(-test_sample)
-
+  dplyr::slice(-test_sample)
 metadata_test <- metadata %>% 
-  slice(test_sample)
-
+  dplyr::slice(test_sample)
 
 # Assigning the block and outcome variable for train and test
-X_train <- list(
-  miRNA = miRNA_train,
+X_train <- list(miRNA = miRNA_train,
   proteins = proteins_train,
-  metabolites = metabolites_train
-)
+  metabolites = metabolites_train)
 
 fibrosis_train <- metadata_train$fibrosis_binary
 alp_train <- metadata_train$alp_binary
 bilirubin_train <- metadata_train$bilirubin_binary
 
-X_test <- list(
-  miRNA = miRNA_test,
+X_test <- list(miRNA = miRNA_test,
   proteins = proteins_test,
-  metabolites = metabolites_test
-)
+  metabolites = metabolites_test)
 
 fibrosis_test <- metadata_test$fibrosis_binary
 alp_test <- metadata_test$alp_binary
@@ -139,11 +111,9 @@ We start by investigating the pair-wise correlation between the different layers
 # miRNA x Proteins
 res1.pls <- pls(X_train$miRNA, X_train$proteins, ncomp = 1)
 cor(res1.pls$variates$X, res1.pls$variates$Y)
-
 # miRNA x Metabolites
 res2.pls <- pls(X_train$miRNA, X_train$metabolites, ncomp = 1)
 cor(res2.pls$variates$X, res2.pls$variates$Y)
-
 # Proteisn x Metabolites
 res3.pls <- pls(X_train$proteins, X_train$metabolites, ncomp = 1)
 cor(res3.pls$variates$X, res3.pls$variates$Y)
@@ -151,12 +121,10 @@ cor(res3.pls$variates$X, res3.pls$variates$Y)
 
 **Optimize**: Thereafter we create the design matrix with where a lower weight gives higher prediction accuracy while a higher weight extracts the correlation structure more precisely.
 ```{r create_design_matrix}
-design <- matrix(
-  0.1, 
+design <- matrix(0.1, 
   nrow = length(X_train), 
   ncol = length(X_train), 
-  dimnames = list(names(X_train), names(X_train))
-  )
+  dimnames = list(names(X_train), names(X_train)))
 
 diag(design) <- 0
 ```
@@ -165,23 +133,26 @@ diag(design) <- 0
 
 To find the optimal number of components I create a initial model with block.plsda() and analyse it with perf(). The crossvalidation is set to leave-one-out since the sample size is small.
 ```{r calculate_number_of_components}
-# # Finding the global performance of the model without variable selction
-# diablo.initial <- block.plsda(X_train, fibrosis_train, ncomp = 5, design = design)
-# 
-# # 10-fold cross validating the model with 10 repeats
-# perf.diablo.initial <- perf(diablo.initial, validation = "loo", nrepeat = 10)
-# 
-# # Plotting the error rate
-# plot(perf.diablo.initial)
-# 
-# # Getting the number of components according to majority vote
-# perf.diablo.initial$choice.ncomp$WeightedVote
+# Finding the global performance of the model without variable selection
+diablo.initial <- block.plsda(X_train, fibrosis_train, ncomp = 5, design = design)
+
+# 10-fold cross validating the model with 10 repeats
+perf.diablo.initial <- perf(diablo.initial, validation = "loo", nrepeat = 10)
+
+# Plotting the error rate
+# pdf(file = "results/plots/error_rates_diablo_model.pdf")
+plot(perf.diablo.initial)
+
+# Getting the number of components according to majority vote
+perf.diablo.initial$choice.ncomp$WeightedVote
+
+# pdf(file = "results/plots/Figure_2/correlation_by_ncomp.pdf")
+for (i in 1:5) {plotDiablo(diablo.initial, ncomp = i)}
 ```
 
 **Optimize**: Since the outcome variable is binary the optimal number of components will usually be 1 as it is usually the number of distinct outcomes minus 1. Therefore I manually set the components to 2 which is the minimum amount needed for plotting.
 ```{r assign_number_of_components}
 #ncomp = perf.diablo$choice.ncomp$WeightedVote["Overall.BER", "centroids.dist"]
-
 ncomp <- 2
 ```
 
@@ -192,26 +163,21 @@ To find the optimal number of variables I create a grid for the span of variable
 **Optimize**: The most important parameters to tweak are test.keepX (start coarse go fine) and nrepeat (generally 10-50 repeats) and the form of validation.
 
 ```{r calculate_number_of_variables}
-# # Selecting a range of amount of variables to keep and storing them as a list
-# 
-# test.keepX <- list(
-#                    miRNA = c(5:9, seq(10, 100, 10)),
-#                    proteins = c(5:9, seq(10, 100, 10)),
-#                    metabolites = c(5:9, seq(10, 100, 10))
-#                   )
-# 
-# # Tuning with loo-crossvalidation, i.e. choosing the variables to keep
-# 
-# start <- Sys.time()
-# tune.diablo <- tune.block.splsda(X_train, alp_train, ncomp = ncomp,
-#                               test.keepX = test.keepX, design = design,
-#                               validation = 'loo',
-#                               BPPARAM = BiocParallel::SnowParam(workers = 16),
-#                               dist = "centroids.dist")
-# end <- Sys.time()
-# print(end - start)
-# 
-# list.keepX <- tune.diablo$choice.keepX
+# Selecting a range of amount of variables to keep and storing them as a list
+test.keepX <- list(miRNA = c(seq(20, 80, 10)),
+                   proteins = c(seq(20, 80, 10)),
+                   metabolites = c(seq(20, 80, 10)))
+
+# Tuning with loo-crossvalidation, i.e. choosing the variables to keep
+start <- Sys.time()
+tune.diablo <- tune.block.splsda(X_train, fibrosis_train, ncomp = ncomp,
+                              test.keepX = test.keepX, design = design,
+                              validation = 'loo',
+                              BPPARAM = BiocParallel::SnowParam(workers = 16),
+                              dist = "centroids.dist")
+end <- Sys.time()
+print(end - start)
+list.keepX <- tune.diablo$choice.keepX
 ```
 
 Here I save the results of previous calculations as they take some time to make and may vary.
@@ -220,56 +186,19 @@ Here I save the results of previous calculations as they take some time to make 
 fibrosis_list.keepX <- list(
   miRNA = c(20, 50),
   proteins = c(20, 20),
-  metabolites = c(30, 20)
-)
-
-# seq(20, 80, 10)
-# 20, 50; 20, 20; 30, 20
+  metabolites = c(30, 20))
 
 # ALP
 alp_list.keepX <- list(
   miRNA = c(80, 20),
   proteins = c(50, 20),
-  metabolites = c(20, 20)
-)
-
-# test.keepX <- list(
-#                    miRNA = c(5:9, seq(10, 100, 10)),
-#                    proteins = c(5:9, seq(10, 100, 10)),
-#                    metabolites = c(5:9, seq(10, 100, 10))
-#                   )
-# 90, 5; 20, 30; 5, 5
-
-# test.keepX <- list(
-#                    miRNA = c(seq(20, 80, 10)),
-#                    proteins = c(seq(20, 80, 10)),
-#                    metabolites = c(seq(20, 80, 10))
-#                   )
-# 80, 20; 50, 20; 20, 20
+  metabolites = c(20, 20))
 
 # Bilirubin
 bilirubin_list.keepX <- list(
   miRNA = c(20, 20),
   proteins = c(20, 20),
-  metabolites = c(20, 20)
-)
-
-# seq(10, 100, 10)
-# 10, 10; 20, 10; 10, 10
-
-# test.keepX <- list(
-#                    miRNA = c(seq(20, 80, 10)),
-#                    proteins = c(seq(20, 80, 10)),
-#                    metabolites = c(seq(20, 80, 10))
-#                   )
-# 20, 20; 20, 20; 20, 20
-
-# test.keepX <- list(
-#                    miRNA = c(5:9, seq(10, 110, 20)),
-#                    proteins = c(5:9, seq(10, 110, 20)),
-#                    metabolites = c(5:9, seq(10, 110, 20))
-#                   )
-# 5, 50; 30, 110; 6, 5
+  metabolites = c(20, 20))
 ```
 
 ## Create final model
@@ -324,6 +253,7 @@ export_variables <- function(diablo) {
 
 We investigate the error rate of our final model and plot AUC. Here it can be important to choose the right type of validation and amount of folds
 ```{r fibrosis_analyse_performance}
+pdf(file = "results/plots/Figure_5_severity/ROC_fibrosis.pdf")
 perf.fibrosis_diablo <- perf(fibrosis_diablo,  validation = 'loo',  
                          nrepeat = 10, dist = 'centroids.dist')
 
@@ -363,6 +293,7 @@ get.BER(confusion.mat)
 
 We plot the correlation between the layers.
 ```{r fibrosis_plot_correlation}
+# pdf(file = "results/plots/Figure_5_severity/fibrosis_correlation.pdf")
 for (i in 1:2) {
   plotDiablo(fibrosis_diablo, ncomp = i)
 }
@@ -371,7 +302,7 @@ for (i in 1:2) {
 ### Plot individuals
 
 ```{r fibrosis_plot_individuals}
-# Individual plot
+# pdf(file = "results/plots/Figure_5_severity/fibrosis_diablo_blocks_network.pdf")
 plotIndiv(fibrosis_diablo, ind.names = FALSE, legend = TRUE, 
           title = 'DIABLO comp 1 - 2')
 
@@ -389,36 +320,30 @@ plotArrow(fibrosis_diablo, ind.names = FALSE, legend = TRUE,
 ### Plot variables
 
 ```{r fibrosis_plot_variables}
-# Variable plot
+# pdf(file = "results/plots/Figure_5_severity/fibrosis_variables_barplot.pdf")
 plotVar(fibrosis_diablo, var.names = FALSE, style = 'graphics', legend = TRUE, 
         pch = c(16, 17, 15), cex = c(2,2,2), 
-        col = c('darkorchid', 'brown1', 'lightgreen'),
-        title = 'TCGA, DIABLO comp 1 - 2')
+        col = c('#377EB8', '#E7298A', '#1B9E77'),
+        title = 'Multiomics analysis in relation to fibrosis level')
 
-# Loadings
-for (i in 1:2) {
-  plotLoadings(fibrosis_diablo, comp = i, contrib = 'max', method = 'median')
-}
+# pdf(file = "results/plots/Figure_5_severity/fibrosis_loadings.pdf")
+for (i in 1:2) {plotLoadings(fibrosis_diablo, comp = i, contrib = 'max', method = 'median')}
 
-# Circos plot
+# pdf(file = "results/plots/Figure_5_severity/fibrosis_circos_plot.pdf")
 circosPlot(fibrosis_diablo, cutoff = 0.7, line = TRUE, 
-           color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
-           color.cor = c("chocolate3","grey20"), size.labels = 1.5)
+           color.blocks = c('#377EB8', '#E7298A', '#1B9E77'),
+           color.cor = c("#D95F02","#984EA3"), size.labels = 1.5)
 
-# # Network
-# X11()   # Opens a new window
-# network(fibrosis_diablo, blocks = c(1,2,3),
-#         cutoff = 0.4,
-#         color.node = c('darkorchid', 'brown1', 'lightgreen'),
-#         # To save the plot, uncomment below line
-#         #save = 'png', name.save = 'diablo-network'
-#         )
+# Network
+# pdf("results/plots/Figure_5_severity/fibrosis_network1.pdf")  # Create a PNG file with specified dimensions
+network(fibrosis_diablo, blocks = c(1,2,3),
+        cutoff = 0.7,
+        color.node = c('#377EB8', '#E7298A', '#1B9E77'))
 
-# # Clustered image map
-# quartz()   # Opens a new window
-# cimDiablo(fibrosis_diablo, color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
-#           comp = 1, margin=c(8,20), legend.position = "right", 
-#           save = 'png', name.save = 'fibrosis_cim')
+# Clustered image map
+# pdf("results/plots/Figure_5_severity/fibrosis_clustered_map.pdf")
+cimDiablo(fibrosis_diablo, color.blocks = c('#377EB8', '#E7298A', '#1B9E77'),
+          comp = 1, margin=c(8,20), legend.position = "right")
 ```
 
 ### Export variables
@@ -428,8 +353,7 @@ We export a table with all compounds used in the model with columns representing
 variables <- export_variables(fibrosis_diablo)
 
 # Save the data as .csv
-setwd("~/R/FoLäk2")
-write_csv(variables, "results/mixOmics/mixOmics_fibrosis_binary.csv")
+write_csv(variables, "results/mixOmics_fibrosis_variables.csv")
 ```
 
 
@@ -529,10 +453,10 @@ circosPlot(alp_diablo, cutoff = 0.7, line = TRUE,
 #         #save = 'png', name.save = 'diablo-network'
 #         )
 
-# # # Clustered image map
+# # Clustered image map
 # quartz()   # Opens a new window
 # cimDiablo(alp_diablo, color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
-#           comp = 1, margin=c(8,20), legend.position = "right",
+#           comp = 1, margin=c(8,20), legend.position = "right", 
 #           save = 'png', name.save = 'alp_cim')
 ```
 
