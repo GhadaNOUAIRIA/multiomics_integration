@@ -1,0 +1,974 @@
+---
+title: "mixOmics analysis of PSC patients"
+author: "Ghada Nouairia, William Wu"
+date: "2024-07-25"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background
+
+The N-integration from the mixOmics package is used to integrate high-throughput miRNA-, protein-, and metabolite data. The data types are layered upon each other creating a three dimensional block. The algorithm used is block PLS-DA where block indicates the multiple data layers, PLS (partial least squares) indicates the algorithm which is similar to PCA, and DA (discriminant analysis) indicates the dependent variable as categorical.
+
+The data is divided into a training and testing subset which will be used to create and validate the model respectively. The outcome variable is categorical. To visualise the results we will plot the grouped individuals and the relationship between the variables.
+
+The parameters that are varied and tweaked are included in **Parameter choice**. They consist of the weight of the design matrix, the number of components, and the number of variables.
+
+# Analysis
+
+## Read the libraries
+
+```{r read_libraries}
+# Core data manipulation and visualization
+library(tidyverse)
+# Multi-omics integration with PLS-based methods
+library(mixOmics)
+# Feature filtering utilities
+library(caret)
+
+```
+
+```{r}
+# Conflict management between functions of different packages
+library(conflicted)
+
+# Prefer dplyr's version of common functions to avoid ambiguity
+conflict_prefer("slice", "dplyr")
+conflict_prefer("rename", "dplyr")
+conflict_prefer("cor", "WGCNA")
+conflict_prefer("nearZeroVar", "caret")
+
+```
+
+## Load the data
+
+The omics data comes in a uniform format with each row representing a patient/sample and each column representing a compound/feature/variable except the first column which contains the patient ID's.
+
+The metadata has been cleaned for the variables of interest so that they are represented by new binary columns. See the preprocessing script for details.
+
+```{r load_data}
+metabolites <- read_csv("../data/metabolite_preprocessed.csv")
+proteins    <- read_csv("../data/protein_preprocessed.csv")
+miRNA       <- read_csv("../data/miRNA_preprocessed.csv")
+metadata    <- read_csv("../data/metadata_preprocessed.csv")
+```
+
+## Prepare the data
+
+We prepare the data by selecting the PSC patients (n = 33) and filtering the variables with low variance using nearZeroVar. Thereafter we split the data into a training and testing set. The latter consists of two patients with high ALP (n = 1, 2) and two patients without low ALP (n = 8, 9). The ALP limit is set to 2.85, see the metadata_preprocessing.
+
+```{r prepare_data}
+# Define test set (ensures representation of both ALP outcomes)
+test_sample <- c(1, 2, 8, 9)
+
+# ------------------ miRNA ------------------
+miRNA <- miRNA[2:ncol(miRNA)] %>%
+         slice(1:33)
+miRNA <- miRNA[, -nearZeroVar(miRNA, uniqueCut = 30)]  # remove low variance features
+miRNA_train <- miRNA %>% slice(-test_sample) %>% as.matrix()
+miRNA_test  <- miRNA %>% slice(test_sample)  %>% as.matrix()
+
+# ------------------ Proteins ------------------
+proteins <- proteins[2:ncol(proteins)] %>%
+           slice(1:33)
+proteins_train <- proteins %>% slice(-test_sample) %>% as.matrix()
+proteins_test  <- proteins %>% slice(test_sample)  %>% as.matrix()
+
+# ------------------ Metabolites ------------------
+metabolites <- metabolites[2:ncol(metabolites)] %>%
+              log2() %>%
+              slice(1:33)
+metabolites <- metabolites[, -nearZeroVar(metabolites, uniqueCut = 30)]
+metabolites_train <- metabolites %>% slice(-test_sample) %>% as.matrix()
+metabolites_test  <- metabolites %>% slice(test_sample)  %>% as.matrix()
+
+# ------------------ Metadata ------------------
+metadata        <- metadata %>% slice_head(n = 33)
+metadata_train  <- metadata %>% slice(-test_sample)
+metadata_test   <- metadata %>% slice(test_sample)
+
+# ------------------ Combine into DIABLO inputs ------------------
+X_train <- list(
+  miRNA       = miRNA_train,
+  proteins    = proteins_train,
+  metabolites = metabolites_train
+)
+
+X_test <- list(
+  miRNA       = miRNA_test,
+  proteins    = proteins_test,
+  metabolites = metabolites_test
+)
+
+# Define outcomes for training and testing
+fibrosis_train  <- metadata_train$fibrosis_binary
+alp_train       <- metadata_train$alp_binary
+bilirubin_train <- metadata_train$bilirubin_binary
+cca_train       <- metadata_train$cca_binary
+ibd_train       <- metadata_train$ibd_binary
+
+fibrosis_test   <- metadata_test$fibrosis_binary
+alp_test        <- metadata_test$alp_binary
+bilirubin_test  <- metadata_test$bilirubin_binary
+cca_test        <- metadata_test$cca_binary
+ibd_test        <- metadata_test$ibd_binary
+```
+
+## Choose parameters {.tabset}
+
+### Design matrix
+
+We start by investigating the pair-wise correlation between the different layers in our block using the PLS algorithm as regression analysis. These values can later be compared to the results from plotDiablo().
+
+```{r correlation_analysis}
+# Correlation between miRNA and Proteins
+res1.pls <- pls(X_train$miRNA, X_train$proteins, ncomp = 1)
+cor(res1.pls$variates$X, res1.pls$variates$Y)
+
+# Correlation between miRNA and Metabolites
+res2.pls <- pls(X_train$miRNA, X_train$metabolites, ncomp = 1)
+cor(res2.pls$variates$X, res2.pls$variates$Y)
+
+# Correlation between Proteins and Metabolites
+res3.pls <- pls(X_train$proteins, X_train$metabolites, ncomp = 1)
+cor(res3.pls$variates$X, res3.pls$variates$Y)
+```
+
+**Optimize**: Thereafter we create the design matrix with where a lower weight gives higher prediction accuracy while a higher weight extracts the correlation structure more precisel and provide a better BER.
+
+
+
+
+```{r create_design_matrix}
+# Initialize a full design matrix with moderate weight (0.2)
+design <- matrix(0.2, 
+                 nrow = length(X_train), 
+                 ncol = length(X_train), 
+                 dimnames = list(names(X_train), names(X_train)))
+
+diag(design) <- 0  # diagonal must be 0 (no self-correlation)
+```
+
+\
+
+### Number of components
+
+To find the optimal number of components I create a initial model with block.plsda() and analyse it with perf(). The crossvalidation is set to leave-one-out since the sample size is small.
+
+```{r calculate_number_of_components}
+# Build initial DIABLO model without feature selection
+diablo.initial <- block.plsda(X_train, fibrosis_train, ncomp = 5, design = design)
+
+# Leave-one-out cross-validation with 10 repetitions
+perf.diablo.initial <- perf(diablo.initial, validation = "loo", nrepeat = 10)
+
+# Print BER (balanced error rate) for each component
+print(perf.diablo.initial$MajorityVote.error.rate)
+print(perf.diablo.initial$WeightedVote.error.rate)
+
+# Plot performance across components
+plot(perf.diablo.initial)
+
+# Extract number of components chosen via weighted vote
+perf.diablo.initial$choice.ncomp$WeightedVote
+
+
+pdf(file = "../results/plots/DIABLO/correlation_by_ncomp.pdf", width = 10, height = 10)
+for (i in 1:5) {
+  plotDiablo(diablo.initial, ncomp = i)
+}
+dev.off()
+```
+
+**Optimize**: Since the outcome variable is binary the optimal number of components will usually be 1 as it is usually the number of distinct outcomes minus 1. Therefore I manually set the components to 2 which is the minimum amount needed for plotting.
+
+```{r assign_number_of_components}
+#ncomp = perf.diablo$choice.ncomp$WeightedVote["Overall.BER", "centroids.dist"]
+ncomp <- 2
+```
+
+### Number of variables
+
+To find the optimal number of variables I create a grid for the span of variables to keep for each omics which can be adjusted and optimized depending on the amount of features contained. Thereafter I analyse the data with tune.block.splsda which gives me an optimal number of variables per layer and component.
+
+**Optimize**: The most important parameters to tweak are test.keepX (start coarse go fine) and nrepeat (generally 10-50 repeats) and the form of validation.
+
+```{r calculate_number_of_variables}
+# Define the grid of variables to test for each omic block
+test.keepX <- list(
+  miRNA       = seq(20, 80, 10),
+  proteins    = seq(20, 80, 10),
+  metabolites = seq(20, 80, 10)
+)
+
+# Perform tuning via LOO-CV (can be long to compute)
+start <- Sys.time()
+tune.diablo <- tune.block.splsda(
+  X = X_train, 
+  Y = ibd_train, 
+  ncomp = ncomp,
+  test.keepX = test.keepX, 
+  design = design,
+  metric = "BER",
+  validation = "loo",
+  BPPARAM = BiocParallel::SnowParam(workers = 16),  # Parallel computation
+  dist = "centroids.dist"
+)
+end <- Sys.time()
+print(end - start)
+
+# Retrieve optimal number of variables to keep
+list.keepX <- tune.diablo$choice.keepX
+```
+
+Here I save the results of previous calculations as they take some time to make and may vary.
+
+```{r assign_number_of_variables}
+# Final selected variables per omics layer and component (manually set)
+
+# Fibrosis
+fibrosis_list.keepX <- list(
+  miRNA       = c(20, 80),
+  proteins    = c(20, 20),
+  metabolites = c(30, 60)
+)
+
+# ALP
+alp_list.keepX <- list(
+  miRNA       = c(20, 20),
+  proteins    = c(20, 60),
+  metabolites = c(20, 20)
+)
+
+# Bilirubin
+bilirubin_list.keepX <- list(
+  miRNA       = c(20, 24),
+  proteins    = c(30, 30),
+  metabolites = c(20, 40)
+)
+
+# CCA
+cca_list.keepX <- list(
+  miRNA       = c(30, 20),  
+  proteins    = c(20, 20),
+  metabolites = c(70, 20)
+)
+
+# IBD
+ibd_list.keepX <- list(
+  miRNA       = c(20, 80),
+  proteins    = c(20, 40),
+  metabolites = c(30, 30)
+)
+```
+
+## Create final model
+
+We create the final model with the training data set and the three parameters that we have defined.
+
+```{r create_final_model}
+# Fibrosis
+fibrosis_diablo <- block.splsda(X_train, fibrosis_train, keepX = fibrosis_list.keepX, ncomp = ncomp, design = design)
+
+# ALP
+alp_diablo <- block.splsda(X_train, alp_train, keepX = alp_list.keepX, ncomp = ncomp, design = design)
+
+# Bilirubin
+bilirubin_diablo <- block.splsda(X_train, bilirubin_train, keepX = bilirubin_list.keepX, ncomp = ncomp, design = design)
+
+#CCA
+cca_diablo <- block.splsda(X_train, cca_train,keepX = cca_list.keepX, ncomp  = ncomp, design = design)
+
+# IBD
+ibd_diablo <- block.splsda(X_train, ibd_train, keepX = ibd_list.keepX, ncomp  = ncomp, design = design)
+```
+
+## Export model
+
+This function exports variables, their coefficients, and their component.
+
+```{r export_variables}
+export_variables <- function(diablo) {
+  # Extract selected variables per block and component
+  variables1_1 <- selectVar(diablo, block = "miRNA",       comp = 1)
+  variables1_2 <- selectVar(diablo, block = "miRNA",       comp = 2)
+  variables2_1 <- selectVar(diablo, block = "proteins",    comp = 1)
+  variables2_2 <- selectVar(diablo, block = "proteins",    comp = 2)
+  variables3_1 <- selectVar(diablo, block = "metabolites", comp = 1)
+  variables3_2 <- selectVar(diablo, block = "metabolites", comp = 2)
+
+  # Concatenate results into a single table
+  results <- rbind(
+    cbind(compounds = variables1_1$miRNA$name,       contribution = variables1_1$miRNA$value$value.var,       component = variables1_1$comp),
+    cbind(compounds = variables1_2$miRNA$name,       contribution = variables1_2$miRNA$value$value.var,       component = variables1_2$comp),
+    cbind(compounds = variables2_1$proteins$name,    contribution = variables2_1$proteins$value$value.var,    component = variables2_1$comp),
+    cbind(compounds = variables2_2$proteins$name,    contribution = variables2_2$proteins$value$value.var,    component = variables2_2$comp),
+    cbind(compounds = variables3_1$metabolites$name, contribution = variables3_1$metabolites$value$value.var, component = variables3_1$comp),
+    cbind(compounds = variables3_2$metabolites$name, contribution = variables3_2$metabolites$value$value.var, component = variables3_2$comp)
+  )
+
+  # Format as tibble with numeric fields
+  results <- results %>%
+    as_tibble() %>%
+    mutate(
+      contribution = as.numeric(contribution),
+      component    = as.numeric(component)
+    )
+  
+  return(results)
+}
+```
+
+# Results
+
+## Fibrosis {.tabset}
+
+### Performance
+
+We investigate the error rate of our final model and plot AUC. Here it can be important to choose the right type of validation and amount of folds
+
+```{r fibrosis_analyse_performance}
+# LOO-CV with 30 repeats using centroid distance
+pdf(file = "../results/plots/DIABLO/ROC_fibrosis.pdf")
+perf.fibrosis_diablo <- perf(fibrosis_diablo, validation = 'loo',  
+                             nrepeat = 30, dist = 'centroids.dist')
+
+# Majority vote error rates per component
+perf.fibrosis_diablo$MajorityVote.error.rate
+
+# Weighted vote error rates per component
+perf.fibrosis_diablo$WeightedVote.error.rate
+
+# AUC plots (not shown here, but can be printed per block)
+for (i in c("miRNA", "proteins", "metabolites")) {
+  auc.fibrosis_diablo <- auroc(fibrosis_diablo, roc.block = i, roc.comp = 2, print = FALSE)
+}
+```
+
+### Prediction
+
+We use our final model to predict the outcome for the test data set and then compare to the actual outcome.
+
+```{r fibrosis_analyse_prediction}
+# Predict fibrosis on test set
+predict.fibrosis_diablo <- predict(fibrosis_diablo, newdata = X_test)
+
+# Create confusion matrix
+confusion.mat <- get.confusion_matrix(
+  truth     = fibrosis_test, 
+  predicted = predict.fibrosis_diablo$WeightedVote$centroids.dist[,2]
+)
+
+# Relabel the matrix dimensions for clarity
+dimnames(confusion.mat) <- list(
+  c("low fibrosis", "high fibrosis"),
+  c("predicted as low fibrosis", "predicted as high fibrosis")
+)  
+
+confusion.mat  # Display the confusion matrix
+
+# Compute Balanced Error Rate
+get.BER(confusion.mat)
+```
+
+### Plot correlation
+
+We plot the correlation between the layers.
+
+```{r fibrosis_plot_correlation}
+pdf(file = "../results/plots/DIABLO/fibrosis_correlation.pdf")
+for (i in 1:2) {
+  plotDiablo(fibrosis_diablo, ncomp = i)
+}
+```
+
+### Plot individuals
+
+```{r fibrosis_plot_individuals}
+pdf(file = "../results/plots/DIABLO/fibrosis_diablo_blocks_network.pdf")
+plotIndiv(fibrosis_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2')
+
+plotIndiv(fibrosis_diablo, ind.names = FALSE, legend = TRUE,
+          title = 'DIABLO comp 1 - 2', block = "average")
+
+plotIndiv(fibrosis_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2', block = "weighted.average")
+
+# Arrow plot shows sample agreement between blocks
+plotArrow(fibrosis_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2')
+
+```
+
+### Plot variables
+
+```{r fibrosis_plot_variables}
+# Barplot of selected variables
+pdf(file = "../results/plots/DIABLO/fibrosis_variables_barplot.pdf")
+plotVar(fibrosis_diablo, var.names = FALSE, style = 'graphics', legend = TRUE, 
+        pch = c(16, 17, 15), cex = c(2,2,2), 
+        col = c('#377EB8', '#E7298A', '#1B9E77'),
+        title = 'Multiomics analysis in relation to fibrosis level')
+dev.off()
+
+# Loadings by component
+pdf(file = "../results/plots/DIABLO/fibrosis_loadings.pdf")
+for (i in 1:2) {
+  plotLoadings(fibrosis_diablo, comp = i, contrib = 'max', method = 'median')
+}
+dev.off()
+
+# Circos plot to show correlation network between blocks
+pdf(file = "../results/plots/DIABLO/fibrosis_circos_plot.pdf", width = 10, height = 10)
+circosPlot(fibrosis_diablo, cutoff = 0.7, line = TRUE, 
+           color.blocks = c('#377EB8', '#E7298A', '#1B9E77'),
+           color.cor = c("#D95F02","#984EA3"), size.labels = 1.5)
+dev.off()
+
+# Clustered image map (heatmap-style correlation matrix)
+pdf("../results/plots/DIABLO/fibrosis_clustered_map.pdf")
+cimDiablo(fibrosis_diablo, color.blocks = c('#377EB8', '#E7298A', '#1B9E77'),
+          comp = 1, margin = c(8, 20), legend.position = "right")
+dev.off()
+```
+
+### Export variables
+
+We export a table with all compounds used in the model with columns representing compound name, coefficient, and component.
+
+```{r fibrosis_export}
+# Extract selected variables with loadings and component
+variables <- export_variables(fibrosis_diablo)
+
+# Save to CSV
+write_csv(variables, "../results/mixOmics_fibrosis_variables.csv")
+```
+
+## ALP {.tabset}
+
+### Performance
+
+We investigate the error rate of our final model and plot AUC. Here it can be important to choose the right type of validation and amount of folds
+
+```{r alp_analyse_performance}
+# Evaluate the performance of the final ALP DIABLO model using leave-one-out cross-validation.
+# The number of repeats is set to 10 to assess stability.
+pdf(file = "../results/plots/DIABLO/ROC_ALP.pdf")
+perf.alp_diablo <- perf(alp_diablo, validation = 'loo',  
+                        nrepeat = 10, dist = 'centroids.dist')
+
+# Output the balanced error rate using majority vote across blocks
+perf.alp_diablo$MajorityVote.error.rate
+
+# Output the balanced error rate using a weighted vote strategy
+perf.alp_diablo$WeightedVote.error.rate
+
+# Compute and store the AUC (Area Under the Curve) per block for component 2
+for (i in c("miRNA", "proteins", "metabolites")) {
+  auc.alp_diablo <- auroc(alp_diablo, roc.block = i, roc.comp = 2, print = FALSE)
+}
+dev.off()
+```
+
+### Prediction
+
+We use our final model to predict the outcome for the test data set and then compare to the actual outcome.
+
+```{r alp_analyse_prediction}
+# Predict ALP classes on the held-out test set using the fitted DIABLO model
+predict.alp_diablo <- predict(alp_diablo, newdata = X_test)
+
+# Compare predicted vs true labels using a confusion matrix
+confusion.mat <- get.confusion_matrix(
+  truth     = alp_test, 
+  predicted = predict.alp_diablo$WeightedVote$centroids.dist[,2]
+)
+
+# Define row/column labels for better readability
+dimnames(confusion.mat) <- list(
+  c("low alp", "high alp"),
+  c("predicted as low alp", "predicted as high alp")
+)  
+
+confusion.mat
+
+# Calculate the balanced error rate (BER)
+get.BER(confusion.mat)
+```
+
+### Plot correlation
+
+We plot the correlation between the layers.
+
+```{r alp_plot_correlation}
+# Display block-level correlation structures for each component
+# These plots show the agreement between omics layers in the multiblock space.
+pdf(file = "../results/plots/DIABLO/alp_correlation.pdf")
+for (i in 1:2) {
+  plotDiablo(alp_diablo, ncomp = i)
+}
+dev.off()
+
+```
+
+### Plot individuals
+
+```{r alp_plot_individuals}
+pdf(file = "../results/plots/DIABLO/alp_diablo_blocks_network.pdf")
+
+# Plot 1: Individual sample projections per block
+# Visualizes samples projected on the first two components for each data block
+plotIndiv(alp_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2')
+
+# Plot 2: Average consensus projection
+# Samples are positioned using the unweighted average of block components
+plotIndiv(alp_diablo, ind.names = FALSE, legend = TRUE,
+          title = 'DIABLO comp 1 - 2', block = "average")
+
+# Plot 3: Weighted consensus projection
+# Similar to average, but components are weighted by block importance
+plotIndiv(alp_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2', block = "weighted.average")
+
+# Plot 4: Arrow plot
+# Arrows represent differences between block-specific and consensus sample locations
+# Shorter arrows indicate strong agreement between omics layers
+plotArrow(alp_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2')
+dev.off()
+
+```
+
+### Plot variables
+
+```{r alp_plot_variables}
+# Visualize variable contributions to each block and component
+
+# Barplot showing the selected features in each omics block
+pdf(file = "../results/plots/DIABLO/alp_variables_barplot.pdf")
+plotVar(alp_diablo, var.names = FALSE, style = 'graphics', legend = TRUE, 
+        pch = c(16, 17, 15), cex = c(2,2,2), 
+        col = c('darkorchid', 'brown1', 'lightgreen'),
+        title = 'DIABLO comp 1 - 2')
+dev.off()
+
+# Plot 1: Loadings for components 1 and 2
+# Highlights variables with the strongest contributions
+pdf(file = "../results/plots/DIABLO/alp_loadings.pdf")
+for (i in 1:2) {
+  plotLoadings(alp_diablo, comp = i, contrib = 'max', method = 'median')
+}
+dev.off()
+
+# Plot 2: Circos plot
+# Shows correlations between variables across omics layers
+# Links represent strong correlations (cutoff > 0.7)
+pdf(file = "../results/plots/DIABLO/alp_circos_plot.pdf")
+circosPlot(alp_diablo, cutoff = 0.7, line = TRUE, 
+           color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5)
+dev.off()
+
+# Plot 3: Clustered Image Map (CIM)
+# Heatmap representation showing clustering of samples and selected variables
+pdf("../results/plots/DIABLO/alp_clustered_map.pdf")
+cimDiablo(alp_diablo, color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
+          comp = 1, margin = c(8, 20), legend.position = "right")
+dev.off()
+```
+
+### Export variables
+
+We export a table with all compounds used in the model with columns representing compound name, coefficient, and component.
+
+```{r alp_export}
+# Export selected variables, their contributions, and component assignment
+variables <- export_variables(alp_diablo)
+
+# Save the table to a CSV file
+write_csv(variables, "../results/mixOmics_alp_binary.csv")
+
+```
+
+## Bilirubin {.tabset}
+
+### Performance
+
+We investigate the error rate of our final model and plot AUC. Here it can be important to choose the right type of validation and amount of folds
+
+```{r bilirubin_analyse_performance}
+# Evaluate the bilirubin model using leave-one-out cross-validation.
+# Repeats set to 10 for robustness.
+pdf(file = "../results/plots/DIABLO/ROC_bilirubin.pdf")
+perf.bilirubin_diablo <- perf(bilirubin_diablo,  validation = 'loo',  
+                              nrepeat = 10, dist = 'centroids.dist')
+
+# Extract and inspect error rates with different voting strategies
+perf.bilirubin_diablo$MajorityVote.error.rate
+perf.bilirubin_diablo$WeightedVote.error.rate
+
+# Compute AUC per omics block for component 2
+for (i in c("miRNA", "proteins", "metabolites")) {
+  auc.bilirubin_diablo <- auroc(bilirubin_diablo, roc.block = i, roc.comp = 2,
+                                print = FALSE)
+}
+dev.off()
+```
+
+### Prediction
+
+We use our final model to predict the outcome for the test data set and then compare to the actual outcome.
+
+```{r bilirubin_analyse_prediction}
+# Predict bilirubin classes in the test dataset
+predict.bilirubin_diablo <- predict(bilirubin_diablo, newdata = X_test)
+
+# Construct and format the confusion matrix
+confusion.mat <- get.confusion_matrix(truth = bilirubin_test, 
+                     predicted = predict.bilirubin_diablo$WeightedVote$centroids.dist[,2])
+
+dimnames(confusion.mat) <- list(
+  c("low bilirubin", "high bilirubin"),
+  c("predicted as low bilirubin", "predicted as high bilirubin")
+)  
+
+confusion.mat
+
+# Calculate the balanced error rate (BER)
+get.BER(confusion.mat)
+
+```
+
+### Plot correlation
+
+We plot the correlation between the layers.
+
+```{r bilirubin_plot_correlation}
+# Visualize the correlation between omics blocks for components 1 and 2
+pdf(file = "../results/plots/DIABLO/bilirubin_correlation.pdf")
+for (i in 1:2) {
+  plotDiablo(bilirubin_diablo, ncomp = i)
+}
+dev.off()
+
+```
+
+### Plot individuals
+
+```{r bilirubin_plot_individuals}
+pdf(file = "../results/plots/DIABLO/bilirubin_diablo_blocks_network.pdf")
+
+# Plot individual sample projections per block and consensus space
+plotIndiv(bilirubin_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2')
+plotIndiv(bilirubin_diablo, ind.names = FALSE, legend = TRUE,
+          title = 'DIABLO comp 1 - 2', block = "average")
+plotIndiv(bilirubin_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2', block = "weighted.average")
+
+# Arrow plot to assess alignment across blocks
+plotArrow(bilirubin_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2')
+dev.off()
+
+```
+
+### Plot variables
+
+```{r bilirubin_plot_variables}
+# Plot variable selection and contributions across blocks and components
+
+# Barplot of selected variables per omics block
+pdf(file = "../results/plots/DIABLO/bilirubin_variables_barplot.pdf")
+plotVar(bilirubin_diablo, var.names = FALSE, style = 'graphics', legend = TRUE, 
+        pch = c(16, 17, 15), cex = c(2,2,2), 
+        col = c('darkorchid', 'brown1', 'lightgreen'),
+        title = 'DIABLO comp 1 - 2')
+dev.off()
+
+# Loadings for components 1 and 2
+pdf(file = "../results/plots/DIABLO/bilirubin_loadings.pdf")
+for (i in 1:2) {
+  plotLoadings(bilirubin_diablo, comp = i, contrib = 'max', method = 'median')
+}
+dev.off()
+
+# Circos plot for cross-block correlations
+pdf(file = "../results/plots/DIABLO/bilirubin_circos_plot.pdf", width = 10, height = 10)
+circosPlot(bilirubin_diablo, cutoff = 0.7, line = TRUE, 
+           color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5)
+dev.off()
+
+# Clustered image map of selected features and samples
+pdf("../results/plots/DIABLO/bilirubin_clustered_map.pdf")
+cimDiablo(bilirubin_diablo, color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
+           comp = 1, margin=c(8,20), legend.position = "right")
+dev.off()
+
+```
+
+### Export variables
+
+We export a table with all compounds used in the model with columns representing compound name, coefficient, and component.
+
+```{r bilirubin_export}
+# Export selected variables for the bilirubin model
+variables <- export_variables(bilirubin_diablo)
+write_csv(variables, "../results/mixOmics_bilirubin_binary.csv")
+```
+
+## CCA {.tabset}
+
+### Performance
+
+```{r cca_analyse_performance}
+# Evaluate the performance of the CCA DIABLO model using LOOCV
+pdf(file = "../results/plots/DIABLO/ROC_CCA.pdf")
+perf.cca_diablo <- perf(cca_diablo, validation = "loo",
+                        nrepeat = 10, dist = "centroids.dist")
+
+# Output classification error rates
+perf.cca_diablo$MajorityVote.error.rate
+perf.cca_diablo$WeightedVote.error.rate
+
+# Compute and store AUC per block for component 2
+for (i in c("miRNA","proteins","metabolites")) {
+  auroc(cca_diablo, roc.block = i, roc.comp = 2, print = FALSE)
+}
+dev.off()
+
+```
+
+### Prediction 
+
+```{r}
+# Predict CCA class labels on the test dataset
+predict.cca_diablo <- predict(cca_diablo, newdata = X_test)
+
+# Force predicted and true classes to binary format
+predicted <- factor(predict.cca_diablo$WeightedVote$centroids.dist[, 2], levels = c(0, 1))
+truth     <- factor(cca_test, levels = c(0, 1))
+
+# Build and format the confusion matrix
+confusion.mat <- table(truth, predicted)
+confusion.mat <- as.matrix(confusion.mat)
+rownames(confusion.mat) <- c("CCA 0", "CCA 1")
+colnames(confusion.mat) <- c("pred 0", "pred 1")
+
+confusion.mat
+
+# Calculate the balanced error rate
+get.BER(confusion.mat)
+
+
+```
+
+### Plot correlation
+
+We plot the correlation between the layers.
+
+```{r alp_plot_correlation}
+# Plot correlation between blocks for each component
+pdf(file = "../results/plots/DIABLO/CCA_correlation.pdf")
+for (i in 1:2) {
+  plotDiablo(cca_diablo, ncomp = i)
+}
+dev.off()
+
+```
+
+### Plot individuals
+
+```{r alp_plot_individuals}
+pdf(file = "../results/plots/DIABLO/CCA_diablo_blocks_network.pdf")
+
+# Block-specific projections
+plotIndiv(cca_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2')
+plotIndiv(cca_diablo, ind.names = FALSE, legend = TRUE,
+          title = 'DIABLO comp 1 - 2', block = "average")
+plotIndiv(cca_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2', block = "weighted.average")
+
+# Arrow plot for assessing sample agreement across blocks
+
+```
+
+### Plot variables
+
+```{r alp_plot_variables}
+# Plot variable contributions and inter-block relationships
+
+# Barplot of selected features
+pdf(file = "../results/plots/DIABLO/CCA_variables_barplot.pdf")
+plotVar(cca_diablo, var.names = FALSE, style = 'graphics', legend = TRUE, 
+        pch = c(16, 17, 15), cex = c(2,2,2), 
+        col = c('darkorchid', 'brown1', 'lightgreen'),
+        title = 'DIABLO comp 1 - 2')
+dev.off()
+
+# Loadings for components 1 and 2
+pdf(file = "../results/plots/DIABLO/CCA_loadings.pdf")
+for (i in 1:2) {
+  plotLoadings(cca_diablo, comp = i, contrib = 'max', method = 'median')
+}
+dev.off()
+
+# Circos plot for correlation visualization
+pdf(file = "../results/plots/DIABLO/CCA_circos_plot.pdf")
+circosPlot(cca_diablo, cutoff = 0.7, line = TRUE, 
+           color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5)
+dev.off()
+
+# Clustered image map
+pdf("../results/plots/DIABLO/CCA_clustered_map.pdf")
+cimDiablo(cca_diablo, color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
+           comp = 1, margin=c(8,20), legend.position = "right")
+dev.off()
+
+```
+
+### Export variables
+
+We export a table with all compounds used in the model with columns representing compound name, coefficient, and component.
+
+```{r alp_export}
+# Export selected variables for CCA DIABLO model
+variables <- export_variables(cca_diablo)
+write_csv(variables, "../results/mixOmics_cca_binary.csv")
+
+```
+
+## IBD {.tabset}
+
+### Performance
+
+```{r ibd_analyse_performance}
+# Evaluate performance of IBD DIABLO model with repeated LOOCV
+pdf(file = "../results/plots/DIABLO/ROC_IBD.pdf")
+perf.ibd_diablo <- perf(ibd_diablo, validation = "loo",
+                        nrepeat = 10, dist = "centroids.dist")
+
+# Display error rates from majority and weighted voting
+perf.ibd_diablo$MajorityVote.error.rate
+perf.ibd_diablo$WeightedVote.error.rate
+
+# AUC values for each omics block
+for (i in c("miRNA","proteins","metabolites")) {
+  auroc(ibd_diablo, roc.block = i, roc.comp = 2, print = FALSE)
+}
+dev.off()
+
+```
+
+### Prediction 
+
+```{r}
+# Predict IBD class labels on test data
+predict.ibd_diablo <- predict(ibd_diablo, newdata = X_test)
+
+# Recode predictions and ground truth for binary classification
+predicted <- factor(predict.ibd_diablo$WeightedVote$centroids.dist[, 2], levels = c(0, 1))
+truth     <- factor(ibd_test, levels = c(0, 1))
+
+# Build and display confusion matrix
+confusion.mat <- table(truth, predicted)
+confusion.mat <- as.matrix(confusion.mat)
+rownames(confusion.mat) <- c("IBD 0", "IBD 1")
+colnames(confusion.mat) <- c("pred 0", "pred 1")
+
+confusion.mat
+get.BER(confusion.mat)
+
+```
+
+### Plot correlation
+
+We plot the correlation between the layers.
+
+```{r alp_plot_correlation}
+# Plot correlation between omics layers
+pdf(file = "../results/plots/DIABLO/IBD_correlation.pdf")
+for (i in 1:2) {
+  plotDiablo(ibd_diablo, ncomp = i)
+}
+dev.off()
+
+```
+
+### Plot individuals
+
+```{r alp_plot_individuals}
+pdf(file = "../results/plots/DIABLO/IBD_diablo_blocks_network.pdf")
+
+# Projection plots for each block and consensus representations
+plotIndiv(ibd_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2')
+plotIndiv(ibd_diablo, ind.names = FALSE, legend = TRUE,
+          title = 'DIABLO comp 1 - 2', block = "average")
+plotIndiv(ibd_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2', block = "weighted.average")
+
+# Arrow plot for visualizing agreement across data blocks
+plotArrow(ibd_diablo, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO comp 1 - 2')
+dev.off()
+
+```
+
+### Plot variables
+
+```{r alp_plot_variables}
+# Visualize variable selection, contributions, and correlations
+
+# Barplot of selected variables across blocks
+pdf(file = "../results/plots/DIABLO/IBD_variables_barplot.pdf")
+plotVar(ibd_diablo, var.names = FALSE, style = 'graphics', legend = TRUE, 
+        pch = c(16, 17, 15), cex = c(2,2,2), 
+        col = c('darkorchid', 'brown1', 'lightgreen'),
+        title = 'DIABLO comp 1 - 2')
+dev.off()
+
+# Plot loadings of top contributing features
+pdf(file = "../results/plots/DIABLO/IBD_loadings.pdf")
+for (i in 1:2) {
+  plotLoadings(ibd_diablo, comp = i, contrib = 'max', method = 'median')
+}
+dev.off()
+
+# Circos plot for correlation among selected variables
+pdf(file = "../results/plots/DIABLO/IBD_circos_plot.pdf")
+circosPlot(ibd_diablo, cutoff = 0.7, line = TRUE, 
+           color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5)
+dev.off()
+
+# Clustered image map
+pdf("../results/plots/DIABLO/IBD_clustered_map.pdf")
+cimDiablo(ibd_diablo, color.blocks = c('darkorchid', 'brown1', 'lightgreen'),
+          comp = 1, margin=c(8,20), legend.position = "right")
+dev.off()
+
+
+```
+
+### Export variables
+
+We export a table with all compounds used in the model with columns representing compound name, coefficient, and component.
+
+```{r alp_export}
+# Export final variable list with components and coefficients
+variables <- export_variables(ibd_diablo)
+write_csv(variables, "../results/mixOmics_ibd_binary.csv")
+
+```
