@@ -1,0 +1,1401 @@
+---
+title: "WGCNA analysis of PSC patients"
+author: "William Wu"
+date: "2024-08-07"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: "hide"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background
+
+We use the Weighted Gene Correlation Network Analysis (WGCNA) to analyse how the variables of our omics-data can be grouped together. The scaled (Z-score) and concatenated omics-data is analysed most thouroughly while each omics is analysed separately in a simpler way. Some chunks are commented out but left in the script to make it easier for someone who has done the Horvath tutorial to understand and modify this code. The graphical settings using the base-package graphics are unfortunately not optimized.
+
+In summary the network model divides the variables into groups called modules based on the correlation between the variables. Thereafter, the module eigenvalues are related to clinical traits and the correlation values and p-values are calculated. For the most interesting module-trait pairs the gene significance (variable-trait correlation) and module membership (variable-module eigengene correlation) are calculated. Lastly all variables of the network model along with their gene significance and module membership are exported for further enrichment analysis.
+
+**WGCNA Application to Proteomic and Metabolomic Data Analysis**
+
+Originally WGCNA was developed only for gene expression. However, with proper missing data imputation and normalization, proteins and metabolites can be studied as well.
+
+The correlation between variables is either positive or negative. In the signed analysis the negative correlation is not considered while the unsigned analysis calculates the absolute value of the correlation making positive and negative correlation equal. This article recommends to construct a signed network.
+
+Article: <https://www.sciencedirect.com/science/article/pii/S0076687916302890>
+
+**Horvath tutorial**
+
+Down below is a short overview of the each step in the Horvath tutorial that can be accessed in the following link below. The most important functions are written down along with their most important arguments. For this analysis the steps 0, 1, 2.b, 3, and 5 are used in a modified way. The most interesting modules are exported.
+
+Tutorial: <https://www.dropbox.com/scl/fo/4vqfiysan6rlurfo2pbnk/h?rlkey=thqg8wlpdn4spu3ihjuc1kmlu&e=1&dl=0>
+
+Parameters:\
+0. Filtering the omics-data for variables with low variance\
+nearZeroVar() - freqCut =, uniqueCut =\
+Comment: The function nearZeroVar() is used identically as in our mixOmics analysis
+
+1.  Removing samples\
+    cutreeStatic() - cutHeight = - Removes outliers\
+    Comment: This step is solely used for initial visualization and not for removing outliers due to our low number of samples
+
+2.a. Creating an automatic network\
+blockwiseModules() - power = - Set soft threshold power with pickSoftThreshold()\
+blockwiseModules() - TOMType = - Choose network type (unsigned or signed)\
+blockwiseModules() - minModuleSize = - Choose minimal size of modules\
+blockwiseModules() - deepSplit = - Choose sensitivity for cluster splitting (default = 2)\
+Comment: This step was initially used but later abandoned in favor of the manual network
+
+2.b. Creating a manual network\
+pickSoftThreshold()\
+adjacency() - Correlation matrix between all variables to the power of the soft threshold\
+TOMsimilarity() - Transformation of the adjacency matrix to reduce noise and spurious associations\
+hclust() - Create gene tree\
+cutreeDynamic() - Create modules\
+moduleEigengenes() - Calculate module eigengenes to create dendrogram\
+mergeCloseModules() - Merge modules with similar expression profiles according to dendrogram\
+Comment: This step is not optimized, i. e. the hyperparameters have not been iterated or motivated thouroughly
+
+3.  Relating the modules with clinical traits\
+    labeledHeatmap() - Choose which clinical traits to investigate for which modules (gene significance = variable-trait correlation; module membership = variable-module eigengene correlation)\
+    Comment: This step is the most important one and is extended so that the most interesting module-trait pairs are exported into csv.files for further analysis
+
+4.  Annotating with gene ontology\
+    Subset interesting modules for annotation and enrichment analysis\
+    Comment: This step is done in our enrichment_analysis script
+
+5.  Visualizing the network model\
+    Visualize gene network with heatmap and dendrogram\
+    Visualize module network for a clinical variable with heatmap and dendrogram\
+    Comment: This step is mainly important for visualising the entire network model
+
+6.  Exporting the network model\
+    Export gene network for visualization with external tools\
+    Comment: This step is skipped since we are not using the external tools
+
+## Read the libraries
+
+## Read the libraries
+
+```{r read_the_libraries, message=FALSE, warning=FALSE}
+# Load essential libraries for data manipulation, WGCNA analysis, modeling, and parallel processing
+library(tidyverse)     # For data manipulation and visualization
+library(WGCNA)         # For weighted gene co-expression network analysis
+library(caret)         # For preprocessing and feature selection
+library(igraph)        # For network visualization and graph operations
+library(doParallel)    # For enabling parallel computatio
+library(multiGSEA)
+```
+
+```{r}
+library(conflicted)    # Handles conflicts between functions from different packages
+
+# Prefer using specific functions from selected packages in case of conflict
+conflict_prefer("slice", "dplyr")
+conflict_prefer("rename", "dplyr")
+conflict_prefer("cor", "WGCNA")
+```
+
+```{r prallel}
+# Initialize a parallel backend using 4 cores
+cl <- makeCluster(4)  # Adjust number of cores depending on your system
+registerDoParallel(cl)
+```
+
+## Set prequisites
+
+```{r prequisites, message=FALSE, warning=FALSE}
+# Ensure strings are not automatically converted to factors
+options(stringsAsFactors = FALSE)
+
+# Enable multithreading in WGCNA to speed up computations
+enableWGCNAThreads()
+```
+
+## Load the data
+
+The omics data comes in a uniform format with each row representing a patient/sample and each column representing a compound/feature/variable except the first column which contains the patient ID's. The metadata has been cleaned for the variables of interest so that they are represented by new binary columns. See the preprocessing script for details.
+
+```{r load_data, message=FALSE, warning=FALSE}
+# Load preprocessed datasets for each omic layer and the associated metadata
+metabolites <- read_csv("../data/metabolite_preprocessed.csv")
+proteins <- read_csv("../data/protein_preprocessed.csv")
+miRNA <- read_csv("../data/miRNA_preprocessed.csv")
+metadata <- read_csv("../data/metadata_preprocessed.csv")
+
+
+medata_OlinkID <- read_csv("../data/metadata_OlinkID.csv")
+medata_metabolites <- read_csv("../data/metadata_metabolomics.csv")
+```
+
+
+## Prepare the data
+
+The patient ID column is set as the rownames to keep track of the rows.\
+The metabolite data was probably not log2 transformed but only scaled with 1 as the median and all other values proportional.\
+-\> The metabolite data needs to be log2 transformed The numerical columns of interest are selected in the metadata.
+
+```{r format_data, message=FALSE, warning=FALSE}
+# Keep first 33 patients and remove miRNAs with low variance
+miRNA <- miRNA %>% 
+  slice(1:33)
+miRNA <- miRNA[,-nearZeroVar(miRNA, uniqueCut = 30)]  # Removes 1920 low-variance miRNAs
+
+# Keep first 33 patients for proteins
+proteins <- proteins %>% 
+  slice(1:33)
+
+# Log2-transform and filter metabolite data
+metabolites <- metabolites %>% 
+  log2() %>% 
+  slice(1:33)
+metabolites <- metabolites[,-nearZeroVar(metabolites, uniqueCut = 30)]  # Removes 29 low-variance metabolites
+
+# Select only binary traits of interest from metadata
+metadata <- metadata %>% 
+  dplyr::select(cca_binary, ibd_binary, fibrosis_binary, alp_binary, bilirubin_binary) %>% 
+  slice(1:33)
+
+
+
+
+# Rename the binary traits for readability
+formatted_names <- c("CCA", "IBD", "Fibrosis", "ALP", "Bilirubin")
+```
+
+We scale (Z-score) and concatenate the omics data.
+
+```{r concatenate_data}
+# Combine scaled miRNA, protein, and metabolite data into a single dataframe
+multi_omics <- cbind(
+  scale(miRNA[2:ncol(miRNA)]),        # Remove ID column and scale miRNA data
+  scale(proteins[2:ncol(proteins)]),  # Remove ID column and scale protein data
+  scale(metabolites[2:ncol(metabolites)]) # Remove ID column and scale metabolite data
+) %>% 
+  as.data.frame() %>% 
+  select_if(~ n_distinct(.x) > 1)      # Remove columns with no variability
+
+```
+
+This function checks if there are any columns with too many missing values. Result: There are no such columns.
+
+```{r check_missing_values}
+# Check for missing values or genes/samples with too many NAs
+# WGCNA recommends using this function before proceeding with analysis
+
+gsg = goodSamplesGenes(multi_omics, verbose = 3)  # Check multi-omics data
+gsg$allOK                                          # Should return TRUE if all data is suitable
+
+gsg = goodSamplesGenes(miRNA[2:ncol(miRNA)], verbose = 3)  # Check miRNA data separately
+gsg$allOK
+
+gsg = goodSamplesGenes(proteins[2:ncol(proteins)], verbose = 3)  # Check protein data separately
+gsg$allOK
+
+gsg = goodSamplesGenes(metabolites[2:ncol(metabolites)], verbose = 3)  # Check metabolite data separately
+gsg$allOK
+
+```
+
+# Multi-omics {.tabset}
+
+## 1. Data input
+
+This initial plot groups the samples with hierarchical clustering to check for outliers.
+
+```{r multi_omics_visualise_samples}
+
+# Perform hierarchical clustering on the combined multi-omics dataset
+sampleTree = hclust(dist(multi_omics), method = "average")  # Use average linkage for clustering
+
+# Create a dendrogram plot of the sample tree and save as a PDF
+pdf(file = "../results/WGCNA/hclust.pdf", width = 12, height = 9)  # Adjust dimensions as needed
+par(cex = 0.6)                    # Set character expansion for labels
+par(mar = c(2, 8, 2, 0))          # Set plot margins
+
+# Plot the dendrogram to visualize sample clustering
+plot(sampleTree, 
+     main = "Sample clustering to detect outliers", 
+     sub = "", xlab = "", 
+     cex.lab = 1.5, cex.axis = 1.5, cex.main = 2)
+
+# Optionally add a red horizontal line to help identify outliers
+abline(h = 75, col = "red")
+```
+
+```{r multi_omics_filter_data}
+##**Skipped**: This function divides the data into the clusters that can be seen in the plot above. Then only the main cluster ##is kept and the data is referred to as fmulti_omics. Any variables that are constant in the filtered dataset are removed.
+# # Determine cluster under the line
+# clust = cutreeStatic(sampleTree, cutHeight = 75, minSize = 10)
+# table(clust)
+# # clust 1 contains the samples we want to keep.
+# keepSamples = (clust==1)
+# fmulti_omics = multi_omics[keepSamples, ]
+# 
+# # Remove the constant variables in our filtered dataset
+# fmulti_omics <- fmulti_omics %>% 
+#     select_if(~ n_distinct(.x) > 1)
+# 
+# nGenes = ncol(fmulti_omics)
+# nSamples = nrow(fmulti_omics)
+```
+
+```{r multi_omics_filter_metadata}
+##**Skipped**: The metadata need to be matched to the main cluster that was kept and it is referred to as fmetadata.
+# # Form a data frame analogous to expression data that will hold the clinical traits.
+# Samples = rownames(fmulti_omics);
+# traitRows = match(Samples, metadata$patient_id);
+# fmetadata = metadata[traitRows, ];
+# fmetadata <- fmetadata %>% column_to_rownames(var = "patient_id")
+# collectGarbage();
+```
+
+The heatmap below show the hierarchical clustering of the samples with corresponding metadata where white means low, red means high, and grey means missing entry.
+
+```{r multi_omics_visualise_traits}
+# Convert binary clinical traits to color-coded matrix for visualization
+# White = low (0), Red = high (1), Grey = missing
+traitColors = numbers2colors(metadata, signed = FALSE)
+
+# Save dendrogram + trait heatmap to PDF
+pdf(file = "../results/WGCNA/sampleClustering_correlation_groups.pdf", width = 12, height = 9)
+plotDendroAndColors(sampleTree, traitColors,
+                    groupLabels = formatted_names, 
+                    main = "Sample dendrogram and trait heatmap")
+```
+
+Intrestingly the Early and NoIBD groups are clustered together.
+
+## 2.a Automatic network construction
+
+We set an interval of soft thresholding powers and plot the scale independence and mean connectivity as a function of those powers. The scale independence reaches the plateau around power = 4.
+
+```{r multi_omics_automatic_choose_power}
+# Re-initialize parallel backend (ensure it's running)
+cl <- makeCluster(4)  # Adapt number of cores to your machine
+registerDoParallel(cl)
+
+# Define a range of candidate powers for soft-thresholding
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+
+# Analyze scale-free topology fit and connectivity at each power
+sft = pickSoftThreshold(multi_omics, powerVector = powers, verbose = 5)
+
+# Save the soft-threshold analysis plots to PDF
+pdf(file = "../results/WGCNA/Automatic_soft_threshold_analysis.pdf", width = 12, height = 9)
+par(mfrow = c(1, 2))  # Plot two graphs side by side
+cex1 = 0.9
+
+# Plot scale-free topology fit index
+plot(sft$fitIndices[,1], 
+     -sign(sft$fitIndices[,3]) * sft$fitIndices[,2],
+     xlab = "Soft Threshold (power)", 
+     ylab = "Scale Free Topology Model Fit, signed R²", 
+     type = "n", main = "Scale independence")
+text(sft$fitIndices[,1], 
+     -sign(sft$fitIndices[,3]) * sft$fitIndices[,2],
+     labels = powers, cex = cex1, col = "red")
+# Optional threshold line for R² (e.g. 0.90)
+# abline(h = 0.90, col = "red")
+
+# Plot mean connectivity for each power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab = "Soft Threshold (power)", 
+     ylab = "Mean Connectivity", 
+     type = "n", main = "Mean connectivity")
+text(sft$fitIndices[,1], sft$fitIndices[,5], 
+     labels = powers, cex = cex1, col = "red")
+```
+
+We create a network with our variables divided into 16 modules with outliers in module 0.
+
+```{r multi_omics_automatic_create_network}
+# Construct network and detect modules (unsupervised WGCNA)
+net = blockwiseModules(multi_omics, power = 4,
+                       TOMType = "unsigned", 
+                       minModuleSize = 30,               # Minimum size of each module
+                       reassignThreshold = 0, 
+                       mergeCutHeight = 0.25,            # Merge threshold for similar modules
+                       numericLabels = TRUE, 
+                       pamRespectsDendro = FALSE, 
+                       saveTOMs = TRUE,                  # Save TOM matrices for future use
+                       saveTOMFileBase = "multi_omicsTOM",
+                       verbose = 3)
+
+# Show the distribution of module sizes (by label)
+table(net$colors)
+```
+
+We create the dendrogram for our network.
+
+```{r multi_omics__automatic_network_dendrogram}
+# Set graphic window dimensions
+sizeGrWindow(12, 9)
+
+# Convert module numeric labels to color names
+mergedColors = labels2colors(net$colors)
+
+# Plot the gene dendrogram and color-coded module assignments
+pdf(file = "../results/WGCNA/automatic_cluster_dendogram.pdf", width = 12, height = 9)
+plotDendroAndColors(net$dendrograms[[1]], 
+                    mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+```
+
+We save some of the results from our network for further analysis. These include the module distribution, its colors, the module eigenvalues, and the dendrogram.
+
+```{r multi_omics_automatic_save_network}
+# Extract module assignments, color codes, and eigengenes
+moduleLabels = net$colors                       # Numeric module labels
+moduleColors = labels2colors(net$colors)        # Corresponding color labels
+MEs = net$MEs                                    # Module eigengenes (summary expression profiles)
+geneTree = net$dendrograms[[1]]                 # Dendrogram of all features  
+```
+
+## 2.b Manual network construction
+
+We set an interval of soft thresholding powers and plot the scale independence and mean connectivity as a function of those powers. The scale independence reaches the plateau around power = 7.
+
+```{r multi_omics_manual_choose_power}
+# Choose a refined set of candidate soft-thresholding powers
+powers = c(c(1:5), seq(from = 5, to = 10, by = 1))
+
+# Run network topology analysis to identify optimal power
+sft = pickSoftThreshold(multi_omics, powerVector = powers, verbose = 5)
+
+# Plot scale independence and connectivity
+pdf(file = "../results/WGCNA/Manual_soft_threshold_analysis.pdf", width = 12, height = 9)
+par(mfrow = c(1,2))
+cex1 = 0.9
+
+# Plot scale-free topology model fit
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3]) * sft$fitIndices[,2],
+     xlab = "Soft Threshold (power)", ylab = "Scale Free Topology Fit, signed R²", 
+     type = "n", main = "Scale independence")
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3]) * sft$fitIndices[,2], 
+     labels = powers, cex = cex1, col = "red")
+
+# Plot mean connectivity
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab = "Soft Threshold (power)", ylab = "Mean Connectivity", 
+     type = "n", main = "Mean connectivity")
+text(sft$fitIndices[,1], sft$fitIndices[,5], 
+     labels = powers, cex = cex1, col = "red")
+
+# Manually set the soft-threshold power for adjacency calculation
+softPower = 7
+```
+
+We calculate the correlation between each variable in a pair-wise manner.
+
+```{r multi_omics_manal_adjacency}
+# Compute the adjacency matrix with the chosen power
+adjacency = adjacency(multi_omics, power = softPower)
+
+# Compute topological overlap matrix (TOM) and dissimilarity
+TOM = TOMsimilarity(adjacency)
+dissTOM = 1 - TOM
+
+```
+
+
+We visualize the dendrogram.
+
+```{r multi_omics_manual_variables_dendrogram}
+# Hierarchical clustering on TOM-based dissimilarity
+geneTree = hclust(as.dist(dissTOM), method = "average")
+
+# Plot the gene dendrogram
+pdf(file = "../results/WGCNA/manual_soft_threshold_analysis.pdf", width = 12, height = 9)
+plot(geneTree, xlab = "", sub = "", main = "Variable clustering on TOM-based dissimilarity",
+     labels = FALSE, hang = 0.04)
+```
+
+We create 11 modules with the 0th module representing outliers.
+
+```{r multi_omics_manual_modules}
+# Identify modules using dynamic tree cut
+minModuleSize = 30
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM,
+                            deepSplit = 2, pamRespectsDendro = FALSE,
+                            minClusterSize = minModuleSize)
+table(dynamicMods)
+```
+
+We visualize the dendrogram again, this time with the corresponding module colors below.
+
+```{r multi_omics_manual_modules_dendrogram}
+# Assign module colors
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+
+# Visualize modules on the dendrogram
+pdf(file = "../results/WGCNA/manual_cluster_dendogram_man_14.pdf", width = 12, height = 9)
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05,
+                    main = "Variable dendrogram and module colors")
+```
+
+We visualize the clustering of the module eigengenes.
+
+```{r multi_omics_manual_eigengenes_network}
+# Calculate module eigengenes and their dissimilarity
+MEList = moduleEigengenes(multi_omics, colors = dynamicColors)
+MEs = MEList$eigengenes
+MEDiss = 1 - cor(MEs)
+METree = hclust(as.dist(MEDiss), method = "average")
+
+# Plot clustering of module eigengenes
+pdf(file = "../results/WGCNA/module_merging.pdf", width = 12, height = 9)
+plot(METree, main = "Clustering of module eigengenes", xlab = "", sub = "")
+abline(h = 0.15, col = "red")  # Optional: show merge threshold
+
+MEDissThres = 0.15
+merge = mergeCloseModules(multi_omics, dynamicColors, cutHeight = MEDissThres, verbose = 3)
+mergedColors = merge$colors
+mergedMEs = merge$newMEs
+```
+
+We are not merging any modules and therefore set the cutting line (MEDissThres) below the lowerst branches in the chunk above.
+
+
+We visualize the cut tree with original and merged modules - No changes since we did not merge any modules.
+
+```{r multi_omics_manual_network_dendrogram}
+# Plot comparison of original and merged modules
+pdf(file = "../results/WGCNA/modules_merged_dendogram.pdf", width = 12, height = 9)
+plotDendroAndColors(geneTree, cbind(dynamicColors, mergedColors),
+                    c("Dynamic Tree Cut", "Merged dynamic"),
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+```
+
+We skip this step since the variables have already been set.
+
+```{r save_modules}
+### Rename to moduleColors
+moduleColors = mergedColors
+### Construct numerical labels corresponding to the colors
+colorOrder = c("grey", standardColors(50));
+moduleLabels = match(moduleColors, colorOrder)-1;
+MEs = mergedMEs;
+### Save module colors and labels for use in subsequent parts
+save(MEs, moduleLabels, moduleColors, geneTree, file = "../results/WGCNA/modules_info.csv")
+```
+
+```{r}
+# Correlate each variable with each module eigengene
+MMandPvalue = corAndPvalue(multi_omics, MEs, use = "p")
+MM = MMandPvalue$cor
+pval = MMandPvalue$p
+
+# Save module membership with p-values
+moduleMembershipDF = data.frame(
+  Variable    = colnames(multi_omics),
+  ModuleColor = moduleColors,
+  MM,
+  pval
+)
+write.csv(moduleMembershipDF, file = "../results/WGCNA/module_membership_pvalues.csv", row.names = FALSE)
+```
+
+## 3. Relating modules to traits
+
+We calculate the ME values for the modules and subsequently calculate the correlation and p-value in regards to the metadata.
+
+```{r multi_omics_calculate_module_eigengenes}
+moduleColors = mergedColors
+
+# Number of variables (genes/features) and number of samples
+nGenes = ncol(multi_omics)
+nSamples = nrow(multi_omics)
+
+# Retrieve precomputed module eigengenes
+MEs = mergedMEs
+
+# Compute Pearson correlations between module eigengenes and traits
+moduleTraitCor = cor(MEs, metadata, use = "p")
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+```
+
+We create a heatmap of the correlation and p-values that were calculated above. Here we can see which modules are significant for which trait.
+
+```{r multi_omics_plot_modules_traits}
+# Format correlation and p-value matrix as a labeled text matrix
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+                   signif(moduleTraitPvalue, 1), ")", sep = "")
+dim(textMatrix) = dim(moduleTraitCor)
+
+# Generate and export the heatmap as PDF
+pdf(file = "../results/WGCNA/manual_module_trait_pearson_heatmap.pdf", wi = 9, he = 6)
+par(mar = c(5, 10, 4, 4))  # bottom, left, top, right
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = formatted_names,
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1),
+               main = "Module-trait relationships (Pearson)")
+```
+
+**Manual network interesting module-trait pairs** From this figure I identify the following pairs to be of interest (p \< 0,001):\
+fibrosis: brown, green\
+fibrosis_binary: brown, green\
+alp: brown\
+alp_binary: brown, green\
+bilirubin: purple, red, brown\
+bilirubin_binary: purple, brown, green
+
+In the following sections we calculate the module mebership and gene significance for the inteeresting module-trait pairs and then export his information into csv files.
+
+
+
+
+## 4. Focus on each trait
+
+## Scatterplot of module membership (MM) vs gene significance (GS)
+
+```{r}
+scatter_MM_GS <- function(module, traitCol, topN = 10, color) {
+  
+  # --- Quick checks ---
+  stopifnot(traitCol %in% colnames(metadata))
+  stopifnot(module %in% moduleColors)
+
+  # --- Format trait as dataframe ---
+  traitDF <- data.frame(metadata[[traitCol]])
+  names(traitDF) <- traitCol
+
+  # --- Compute MM and GS correlations ---
+  modNames <- substring(names(MEs), 3)
+  geneMM   <- as.data.frame(cor(multi_omics, MEs, use = "p"))
+  geneGS   <- as.data.frame(cor(multi_omics, traitDF, use = "p"))
+
+  # --- Subset for variables in selected module ---
+  colIdx <- match(module, modNames)
+  moduleGenes <- moduleColors == module
+
+  MMabs <- abs(geneMM[moduleGenes, colIdx])
+  GSabs <- abs(geneGS[moduleGenes, 1])
+  varNames <- names(multi_omics)[moduleGenes]
+
+  # --- Rank top variables by MM × GS score ---
+  score <- MMabs * GSabs
+  topIdx <- order(score, decreasing = TRUE)[1:min(topN, length(score))]
+
+  # --- Plot scatterplot ---
+  verboseScatterplot(
+    x = MMabs, y = GSabs,
+    xlab = paste("Module Membership in", module, "module"),
+    ylab = paste("Gene significance for", traitCol),
+    main = "Module membership vs. gene significance",
+    col = color,
+    pch = 16, cex = 0.6,
+    cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2
+  )
+
+  # Optional: annotate topN points (currently commented out)
+  # text(MMabs[topIdx], GSabs[topIdx] + 0.02,
+  #      labels = varNames[topIdx], pos = 3, cex = 0.5, col = "black")
+}
+```
+
+```{r}
+## Function to compute and visualize module activity scores by phenotype group
+multiomics_score <- function(module_color = "yellow",
+                             phenotype = "CCA",
+                             module_df = moduleMembershipDF,
+                             omics_df = multi_omics,
+                             meta_df = metadata,
+                             do_plot = TRUE) {
+
+  # --- 1. Select variables in target module ---
+  vars <- module_df %>%
+    dplyr::filter(ModuleColor == module_color) %>%
+    dplyr::pull(Variable)
+
+  if (length(vars) == 0)
+    stop("No variables found for module ‘", module_color, "’.")
+
+  omics_filt <- omics_df %>% dplyr::select(dplyr::all_of(vars))
+
+  # --- 2. Create binary trait indicator (case vs control) ---
+  pheno_bin_col <- paste0(tolower(phenotype), "_binary")
+  if (!pheno_bin_col %in% names(meta_df))
+    stop("Column ‘", pheno_bin_col, "’ is missing in metadata.")
+
+  is_case <- meta_df[[pheno_bin_col]] == 1
+  omics_case <- omics_filt[is_case, , drop = FALSE]
+  omics_control <- omics_filt[!is_case, , drop = FALSE]
+
+  # --- 3. Combine with group labels ---
+  df_all <- dplyr::bind_rows(
+    as.data.frame(omics_case)    %>% dplyr::mutate(group = phenotype),
+    as.data.frame(omics_control) %>% dplyr::mutate(group = paste0("No_", phenotype))
+  )
+
+  # --- 4. Z-score normalization (per variable) ---
+  df_scaled <- df_all %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ scale(.)[, 1]))
+
+  # --- 5. Compute average module score per sample ---
+  df_scores <- df_scaled %>%
+    dplyr::rowwise() %>%
+    dplyr::mutate(score = mean(dplyr::c_across(where(is.numeric)), na.rm = TRUE)) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(group, score)
+
+  # --- 6. Sample counts and label positioning ---
+  df_n <- df_scores %>%
+    dplyr::group_by(group) %>%
+    dplyr::summarise(n = dplyr::n(),
+                     y_pos = max(score, na.rm = TRUE) + 0.05,
+                     .groups = "drop")
+
+  # --- 7. Statistical tests ---
+  wilcox_res <- stats::wilcox.test(score ~ group, data = df_scores, exact = FALSE)
+  cliff_res  <- effsize::cliff.delta(score ~ group, data = df_scores)
+  pval <- formatC(wilcox_res$p.value, digits = 3, format = "g")
+
+  # --- 8. Optional boxplot visualization ---
+  if (isTRUE(do_plot)) {
+    suppressMessages({
+      p <- ggplot2::ggplot(df_scores, ggplot2::aes(group, score, fill = group)) +
+        ggplot2::stat_boxplot(geom = "errorbar", width = .25) +
+        ggplot2::geom_boxplot(width = 0.6, outlier.shape = NA) +
+        ggplot2::geom_jitter(width = .1, size = 2, alpha = .6) +
+        ggplot2::geom_text(data = df_n,
+                           ggplot2::aes(x = group, y = y_pos,
+                                        label = paste0("n = ", n)),
+                           vjust = 0, fontface = "bold", size = 4) +
+        ggplot2::expand_limits(y = max(df_n$y_pos) + 0.1) +
+        ggplot2::theme_bw() +
+        ggplot2::theme(panel.grid = ggplot2::element_blank(),
+                       aspect.ratio = 2,
+                       legend.position = "none",
+                       plot.title = ggplot2::element_text(hjust = 0.5)) +
+        ggplot2::labs(x = "", y = "Average z-score (module activity)",
+                      title = paste0(phenotype, " - Wilcoxon test (", module_color, "), p = ", pval))
+      print(p)
+    })
+  }
+
+  # --- 9. Return score and test results ---
+  list(scores = df_scores,
+       wilcox = wilcox_res,
+       cliff  = cliff_res)
+}
+```
+
+### Fibrosis
+
+```{r}
+# Visualize MM vs GS for brown and green modules (Fibrosis)
+pdf(file = "../results/WGCNA/fibrosis_module_membership.pdf", wi = 9, he = 6)
+scatter_MM_GS("brown", "fibrosis_binary", color = "brown")
+scatter_MM_GS("green", "fibrosis_binary", color = "forestgreen")
+```
+
+```{r}
+# Compare module scores between fibrosis and non-fibrosis groups
+pdf(file = "../results/WGCNA/fibrosis_modules_boxplot.pdf", wi = 9, he = 6)
+multiomics_score("brown", "Fibrosis", moduleMembershipDF, multi_omics, metadata)
+multiomics_score("green", "Fibrosis", moduleMembershipDF, multi_omics, metadata)
+```
+
+
+
+
+### ALP
+```{r}
+pdf(file = "../results/WGCNA/alp_module_membership.pdf", wi = 9, he = 6)
+scatter_MM_GS("brown", "alp_binary", color = "brown")
+scatter_MM_GS("green", "alp_binary", color = "forestgreen")
+```
+
+```{r}
+pdf(file = "../results/WGCNA/alp_modules_boxplot.pdf", wi = 9, he = 6)
+multiomics_score("brown", "ALP", moduleMembershipDF, multi_omics, metadata)
+multiomics_score("green", "ALP", moduleMembershipDF, multi_omics, metadata)
+```
+
+
+### Bilirubin
+
+```{r}
+pdf(file = "../results/WGCNA/bilirubin_module_membership.pdf", wi = 9, he = 6)
+scatter_MM_GS("brown", "bilirubin_binary", color = "brown")
+scatter_MM_GS("green", "bilirubin_binary", color = "forestgreen")
+```
+
+```{r}
+pdf(file = "../results/WGCNA/bilirubin_modules_boxplot.pdf", wi = 9, he = 6)
+multiomics_score("brown", "Bilirubin", moduleMembershipDF, multi_omics, metadata)
+multiomics_score("green", "Bilirubin", moduleMembershipDF, multi_omics, metadata)
+```
+
+### CCA
+
+```{r}
+pdf(file = "../results/WGCNA/CCA_module_membership.pdf", wi = 9, he = 6)
+scatter_MM_GS("yellow", "cca_binary", color = "gold")
+```
+
+
+```{r}
+pdf(file = "../results/WGCNA/CCA_modules_boxplot.pdf", wi = 9, he = 6)
+multiomics_score("yellow", "CCA", moduleMembershipDF, multi_omics, metadata)
+```
+### IBD
+
+```{r}
+pdf(file = "../results/WGCNA/IBD_module_membership.pdf", wi = 9, he = 6)
+scatter_MM_GS("yellow", "ibd_binary", color = "gold")
+scatter_MM_GS("brown", "ibd_binary", color = "brown")
+
+```
+
+```{r}
+pdf(file = "../results/WGCNA/IBD_modules_boxplot.pdf", wi = 9, he = 6)
+multiomics_score("yellow", "IBD", moduleMembershipDF, multi_omics, metadata)
+multiomics_score("brown", "IBD", moduleMembershipDF, multi_omics, metadata)
+```
+
+
+## 5. Global visualisation
+
+
+We create a heatmap that shows the correlation between all of our variables. The bright spots are our modules.
+
+```{r multi_omics_plot_variable_dendrogram_heatmap}
+# Recompute the TOM matrix
+dissTOM = 1 - TOMsimilarityFromExpr(multi_omics, power = 7)
+plotTOM = dissTOM^7
+diag(plotTOM) = NA  # Remove diagonal for clarity
+
+pdf(file = "../results/WGCNA/WGCNA_tomplot.pdf", wi = 9, he = 6)
+TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap and dendrogram")
+```
+
+```{r}
+# Prepare trait names and compute correlations with modules
+traitNames <- c("cca_binary", "ibd_binary", "alp_binary", "fibrosis_binary", "bilirubin_binary")
+stopifnot(all(rownames(mergedMEs) == rownames(metadata)))
+traits <- metadata[, traitNames, drop = FALSE]
+MET <- orderMEs(cbind(mergedMEs, traits))
+
+# Compute distance matrix (1 - |cor|) and cluster
+dissME <- 1 - abs(cor(MET, use = "p"))
+tree <- hclust(as.dist(dissME), method = "average")
+
+# Rename trait labels for readability
+labels_raw <- colnames(MET)
+labels_custom <- sapply(labels_raw, function(name) {
+  if (grepl("^ME", name)) return(name)
+  name <- gsub("_binary", "", name)
+  switch(name,
+         alp = "ALP",
+         cca = "CCA",
+         ibd = "IBD",
+         fibrosis = "Fibrosis",
+         bilirubin = "Bilirubin",
+         name)
+})
+tree$labels <- labels_custom
+
+# Plot dendrogram of eigengenes and traits
+pdf(file = "../results/WGCNA/WGCNA_tomplot.pdf", wi = 9, he = 6)
+plot(tree,
+     main = "Dendrogram of module eigengenes and traits\n(distance = 1 - |cor|)",
+     xlab = "", sub = "", hang = 0.03, cex = 1)
+dev.off()
+```
+
+
+```{r}
+# Compute signed correlation matrix and rename dimensions
+corMAT <- cor(MET, use = "p")
+prettyNames <- c("CCA", "IBD", "ALP", "Fibrosis", "Bilirubin")
+names(prettyNames) <- traitNames
+
+renameFun <- function(x) ifelse(x %in% traitNames, prettyNames[x], x)
+rownames(corMAT) <- renameFun(rownames(corMAT))
+colnames(corMAT) <- renameFun(colnames(corMAT))
+
+# Order rows/columns by hierarchical clustering
+tree <- hclust(as.dist(1 - abs(corMAT)), method = "average")
+ord <- tree$order
+corMAT <- corMAT[ord, ord]
+
+# Format text for cell labels
+textMatrix <- signif(corMAT, 2)
+dim(textMatrix) <- dim(corMAT)
+
+
+pdf(file = "../results/WGCNA/Heatmap_moduleXtrait.pdf", wi = 9, he = 6)
+par(mar = c(8, 8, 4, 4))  # bottom, left, top, right
+
+labeledHeatmap(
+  Matrix = corMAT,
+  xLabels = colnames(corMAT),
+  yLabels = rownames(corMAT),
+  ySymbols = rownames(corMAT),
+  colorLabels = FALSE,
+  colors = blueWhiteRed(50),
+  textMatrix = textMatrix,
+  cex.text = 0.55,
+  cex.lab = 1,
+  xLabelsAngle = 90,
+  setStdMargins = FALSE,
+  zlim = c(-1, 1),
+  main = "Signed correlation heatmap – modules & traits"
+)
+dev.off()
+```
+
+## 6. Enrichment
+
+
+### Global function
+
+```{r}
+library(dplyr); library(stringr); library(tibble)
+library(multiMiR); library(graphite); library(multiGSEA)
+
+calc_diff_log <- function(mat, group) {
+  cca_idx <- group == "CCA"
+  tibble(
+    feature = colnames(mat),
+    logFC   = colMeans(mat[cca_idx , ], na.rm = TRUE) -
+              colMeans(mat[!cca_idx, ], na.rm = TRUE),
+    pval    = apply(mat, 2, function(x) t.test(x ~ group)$p.value)
+  )
+}
+
+
+
+dedup_minp <- function(df) {
+  df %>% arrange(pval) %>% distinct(feature, .keep_all = TRUE)
+}
+
+
+
+clean_empty <- function(df) {
+  df %>% filter(!is.na(feature), feature != "")
+}
+
+
+
+rank_vec <- function(df) {
+  score <- sign(df$logFC) * -log10(df$pval)
+  keep  <- is.finite(score) & !duplicated(df$feature)
+  setNames(score[keep], df$feature[keep])
+}
+
+
+group_vec <- ifelse(metadata$cca_binary == 1, "CCA", "nonCCA")
+group_fac <- factor(group_vec, levels = c("nonCCA", "CCA"))
+
+
+### Sélection de colonnes
+gene_cols  <- grep("^hsa[-_]",  colnames(multi_omics), value = TRUE, ignore.case = TRUE)
+prot_cols  <- grep("^OID",     colnames(multi_omics), value = TRUE)
+met_cols   <- grep("^(X)?[0-9]+$", colnames(multi_omics), value = TRUE)
+
+### Statistiques brutes
+gene_stats  <- calc_diff_log(multi_omics[, gene_cols ],  group_fac)
+prot_stats  <- calc_diff_log(multi_omics[, prot_cols ],  group_fac)
+met_stats   <- calc_diff_log(multi_omics[, met_cols ],   group_fac)
+
+### --- 1B  Protéines : OID → UniProt et split “A,B” ----------------------
+oid_map <- medata_OlinkID %>%
+  filter(OlinkID == "Uniprot ID") %>%
+  pivot_longer(-OlinkID, names_to = "oid", values_to = "uniprot") %>%
+  filter(uniprot != "")
+
+prot_stats <- prot_stats %>%
+  left_join(oid_map, by = c("feature" = "oid")) %>%
+  mutate(feature = coalesce(uniprot, feature)) %>%   # garde UniProt s’il existe
+  select(feature, logFC, pval) %>%
+  mutate(feature = str_remove_all(feature, "\\s+")) %>%  # retire espaces
+  separate_rows(feature, sep = ",")                       # ← Éclate “A,B”
+
+### --- Métabolites : COMP ID → HMDB (sinon KEGG)
+met_map <- medata_metabolites %>%
+  select(`COMP ID`, HMDB, KEGG) %>%
+  mutate(cid_char = as.character(`COMP ID`),
+         id_final = if_else(HMDB != "" & !is.na(HMDB), HMDB, KEGG)) %>%
+  filter(id_final != "") %>%
+  select(cid_char, id_final)
+
+met_stats <- met_stats %>%
+  left_join(met_map, by = c("feature" = "cid_char")) %>%
+  mutate(feature = coalesce(id_final, feature),
+         feature = str_remove_all(feature, "\\s+")) %>%
+  separate_rows(feature, sep = ",") %>%
+  select(feature, logFC, pval)
+
+
+
+
+### 1D  map gènes cibles (miRTarBase uniquement)
+mir_pat <- regex("^hsa[-_](mir|miR|let)", ignore_case = TRUE)
+mir_vec <- unique(gene_stats$feature[str_detect(gene_stats$feature, mir_pat)])
+
+mm <- get_multimir(mirna = mir_vec, table = "validated",
+                   org = "hsa", summary = FALSE)
+
+targets <- mm@data %>%
+  filter(database == "mirtarbase") %>%
+  select(mirna = mature_mirna_id, target_symbol) %>% distinct()
+```
+```{r}
+targets <- mm@data %>%
+  filter(database == "mirtarbase") %>%
+  select(mirna = mature_mirna_id, target_symbol) %>% distinct()
+```
+
+
+
+
+```{r}
+run_multiGSEA <- function(multi_omics, metadata,
+                          moduleMembershipDF,
+                          condition_bin,          # nom de la colonne binaire
+                          module_color,           # ex. "yellow"
+                          oid_map, met_map, targets,
+                          dbs = c("kegg", "reactome")) {
+
+  ## ─── 0. petits helpers ───────────────────────────────────────────────
+  calc_diff_log <- function(mat, group) {
+    pos <- group == "POS"
+    tibble(
+      feature = colnames(mat),
+      logFC   = colMeans(mat[pos , ], na.rm = TRUE) -
+                colMeans(mat[!pos, ], na.rm = TRUE),
+      pval    = apply(mat, 2, function(x) t.test(x ~ group)$p.value)
+    )
+  }
+  dedup_minp <- function(df) df %>% arrange(pval) %>% distinct(feature,.keep_all=TRUE)
+  clean_empty<- function(df) df %>% filter(!is.na(feature), feature != "")
+  rank_vec   <- function(df) {
+      s <- sign(df$logFC)*-log10(df$pval)
+      setNames(s[is.finite(s) & !duplicated(df$feature)], df$feature[is.finite(s)&!duplicated(df$feature)])
+  }
+
+  ## ─── 1. groupe POS / NEG ────────────────────────────────────────────
+  group_fac <- factor(ifelse(metadata[[condition_bin]] == 1, "POS", "NEG"),
+                      levels = c("NEG", "POS"))
+
+  ## ─── 2. stats brutes et mapping ID ──────────────────────────────────
+  gene_cols <- grep("^hsa[-_]",  colnames(multi_omics), value = TRUE, ignore.case = TRUE)
+  prot_cols <- grep("^OID",     colnames(multi_omics), value = TRUE)
+  met_cols  <- grep("^(X)?[0-9]+$", colnames(multi_omics), value = TRUE)
+
+  gene_stats <- calc_diff_log(multi_omics[, gene_cols], group_fac)
+  prot_stats <- calc_diff_log(multi_omics[, prot_cols], group_fac)
+  met_stats  <- calc_diff_log(multi_omics[, met_cols ], group_fac)
+
+  ## protéines
+  prot_stats <- prot_stats %>%
+      left_join(oid_map, by = c("feature" = "oid")) %>%
+      mutate(feature = coalesce(uniprot, feature)) %>%
+      select(feature, logFC, pval) %>%
+      mutate(feature = str_remove_all(feature, "\\s+")) %>%
+      separate_rows(feature, sep = ",")
+
+  ## métabolites
+  met_stats <- met_stats %>%
+      left_join(met_map, by = c("feature" = "cid_char")) %>%
+      mutate(feature = coalesce(id_final, feature),
+             feature = str_remove_all(feature, "\\s+")) %>%
+      separate_rows(feature, sep = ",") %>%
+      select(feature, logFC, pval)
+
+  ## miRNA → gènes
+  mir_pat <- regex("^hsa[-_](mir|miR|let)", ignore_case = TRUE)
+  mir_vec <- unique(gene_stats$feature[str_detect(gene_stats$feature, mir_pat)])
+
+  mir_rows  <- gene_stats %>% filter(str_detect(feature, mir_pat))
+  gene_keep <- gene_stats %>% filter(!str_detect(feature, mir_pat))
+
+  mir_prop <- mir_rows %>%
+      rename(mirna = feature) %>%
+      inner_join(targets, by = c("mirna")) %>%
+      mutate(feature = target_symbol, logFC = -logFC) %>%
+      select(feature, logFC, pval) %>%
+      group_by(feature) %>%
+      summarise(logFC = mean(logFC), pval = min(pval), .groups = "drop")
+
+  gene_stats <- bind_rows(gene_keep, mir_prop)
+
+  ## nettoyer / dé-doublonner
+  gene_stats <- gene_stats %>% clean_empty() %>% dedup_minp()
+  prot_stats <- prot_stats %>% clean_empty() %>% dedup_minp()
+  met_stats  <- met_stats  %>% clean_empty() %>% dedup_minp()
+
+  ranks_gene <- rank_vec(gene_stats)
+  ranks_prot <- rank_vec(prot_stats)
+  ranks_met  <- rank_vec(met_stats)
+
+  omics_ranked <- list(transcriptome = ranks_gene,
+                       proteome      = ranks_prot,
+                       metabolome    = ranks_met)
+
+  ## ─── 3. définitions de voies & enrichissement ───────────────────────
+  path_defs <- getMultiOmicsFeatures(
+      dbs   = dbs,
+      layer = names(omics_ranked),
+      returnTranscriptome = "SYMBOL",
+      returnProteome      = "UNIPROT",
+      returnMetabolome    = "HMDB",
+      useLocal = FALSE)
+
+  enrich_scores <- multiGSEA(path_defs, omics_ranked)
+
+  df <- extractPvalues(enrich_scores, pathwayNames = names(path_defs[[1]])) %>%
+        mutate(combined_pval  = combinePvalues(., method = "stouffer"),
+               combined_padj  = p.adjust(combined_pval, method = "BH"),
+               pathway = names(path_defs[[1]]))
+
+  ## ─── 4. empreinte du module demandé ─────────────────────────────────
+  yellow_features <- moduleMembershipDF %>%
+      filter(ModuleColor == module_color) %>% pull(Variable)
+
+  ## mapping identique à plus haut (résumé)
+  prot_y <- tibble(orig = yellow_features) %>%
+      filter(str_detect(orig, "^OID")) %>%
+      left_join(oid_map, by = c("orig" = "oid")) %>%
+      transmute(feature = uniprot) %>% filter(!is.na(feature), feature!="")
+
+  met_y  <- tibble(orig = yellow_features) %>%
+      filter(str_detect(orig, "^(X)?[0-9]+$")) %>%
+      mutate(cid_char = str_remove(orig, "^X")) %>%
+      left_join(met_map, by = "cid_char") %>%
+      transmute(feature = id_final) %>% filter(!is.na(feature), feature!="")
+
+  mir_y  <- tibble(orig = yellow_features) %>%
+      filter(str_detect(orig, mir_pat)) %>%
+      inner_join(targets, by = c("orig" = "mirna")) %>%
+      transmute(feature = target_symbol)
+
+  gene_y <- tibble(feature = yellow_features) %>%
+      filter(!feature %in% c(prot_y$feature, met_y$feature, mir_y$feature),
+             !str_detect(feature, "^OID"),
+             !str_detect(feature, "^(X)?[0-9]+$"),
+             !str_detect(feature, mir_pat))
+
+  yellow_map <- list(
+      transcriptome = unique(c(gene_y$feature, mir_y$feature)),
+      proteome      = unique(prot_y$feature),
+      metabolome    = unique(met_y$feature))
+  
+  
+  mod_size <- sapply(yellow_map, length)      # vecteur named
+  mod_size_total <- sum(mod_size)
+
+  count_hits <- function(pw_list, hits)
+      sapply(pw_list, function(m) sum(m %in% hits))
+  
+  
+
+
+  hits_df <- tibble(
+      pathway      = names(path_defs[[1]]),
+      hit_gene     = count_hits(path_defs$transcriptome, yellow_map$transcriptome),
+      hit_prot     = count_hits(path_defs$proteome,      yellow_map$proteome),
+      hit_metab    = count_hits(path_defs$metabolome,    yellow_map$metabolome)
+  ) %>%   mutate(
+    pct_gene  = hit_gene  / mod_size["transcriptome"] * 100,
+    pct_prot  = hit_prot  / mod_size["proteome"]      * 100,
+    pct_metab = hit_metab / mod_size["metabolome"]    * 100,
+    total_hits = hit_gene + hit_prot + hit_metab,
+    pct_total  = total_hits / mod_size_total * 100
+  )
+
+  ## ─── 5. fusion & retour ─────────────────────────────────────────────
+  res <- df %>% left_join(hits_df, by = "pathway") %>%
+         arrange(combined_padj)
+
+  return(res)
+}
+
+
+
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  bar_enrichment_plot()
+#      • res_tbl     : data-frame produced by the workflow (must contain
+#                      pathway, combined_padj, pct_total columns)
+#      • module_col  : colour / name of the WGCNA module (for the title)
+#      • pheno_lab   : short label of the comparison (default "CCA")
+#      • top_n       : how many pathways to draw (default 20)
+#      • maxlen      : maximum visible chars per label (*excluding* star)
+#      • palette     : any scico palette (default = "vik")
+#  returns a ggplot object
+# ──────────────────────────────────────────────────────────────────────────
+bar_enrichment_plot <- function(res_tbl,
+                                module_col = "Yellow",
+                                pheno_lab  = "CCA",
+                                top_n      = 20,
+                                maxlen     = 50,
+                                palette    = "vik") {
+
+  library(dplyr); library(stringr); library(purrr)
+  library(ggplot2); library(scico)
+
+  plot_df <- res_tbl %>% 
+    filter(!is.na(combined_padj)) %>% 
+    arrange(combined_padj) %>% 
+    slice_head(n = top_n) %>% 
+    mutate(
+      score    = -log10(combined_padj),
+      pct_lab  = paste0(round(pct_total), "%"),
+
+      db_star  = case_when(
+        str_detect(pathway, "^\\(REACTOME\\)") ~ "*",
+        str_detect(pathway, "^\\(KEGG\\)"    ) ~ "**",
+        TRUE                                    ~ ""
+      ),
+      path_clean = str_remove(pathway, "^\\((KEGG|REACTOME)\\)\\s*"),
+
+      trunc_w    = pmax(1, maxlen - nchar(db_star) - 1L),
+      path_abbr  = map2_chr(path_clean, trunc_w,
+                            ~ str_trunc(.x, width = .y, side = "right")),
+
+      ## make labels unique AFTER truncation
+      pathway_short = make.unique(paste0(path_abbr, " ", db_star), sep = " "),
+      pathway_short = factor(pathway_short, levels = rev(pathway_short))
+    )
+
+  ggplot(plot_df,
+         aes(x = score, y = pathway_short, fill = combined_padj)) +
+    geom_col() +
+    geom_text(aes(label = pct_lab, x = score + 0.15),
+              hjust = 0, size = 3) +
+    scale_fill_scico(
+      palette   = palette,
+      direction = 1,
+      trans     = "reverse",
+      name      = "adjusted p-value"
+    ) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      x       = expression(-log[10]~"(adjusted p-value)"),
+      y       = NULL,
+      title   = sprintf("%s enrichment – %% of %s module",
+                        pheno_lab, module_col),
+      caption = "* Reactome      ** KEGG"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      panel.grid.major.y    = element_blank(),
+      legend.position       = "right",
+      plot.caption          = element_text(hjust = 0, vjust = 1, size = 9),
+      plot.caption.position = "plot"
+    )
+}
+
+
+
+```
+
+
+### Fibrosis 
+```{r}
+res_fibrosis_brown <- run_multiGSEA(multi_omics, metadata,
+                         moduleMembershipDF,
+                         condition_bin = "fibrosis_binary",
+                         module_color  = "brown",
+                         oid_map = oid_map,
+                         met_map = met_map,
+                         targets = targets)
+
+pdf(file = "../results/WGCNA/enrich_fibrosis_brown.pdf", wi = 9, he = 6)
+bar_enrichment_plot(
+         res_tbl    = res_fibrosis_brown,
+         module_col = "brown",
+         pheno_lab  = "Fibrosis",
+       )
+dev.off()
+
+
+res_fibrosis_green <- run_multiGSEA(multi_omics, metadata,
+                         moduleMembershipDF,
+                         condition_bin = "fibrosis_binary",
+                         module_color  = "green",
+                         oid_map = oid_map,
+                         met_map = met_map,
+                         targets = targets)
+
+pdf(file = "../results/WGCNA/enrich_fibrosis_green.pdf", wi = 9, he = 6)
+bar_enrichment_plot(
+         res_tbl    = res_fibrosis_green,
+         module_col = "green",
+         pheno_lab  = "Fibrosis",
+       )
+dev.off()
+```
+
+
+### ALP 
+
+```{r}
+
+res_alp_brown <- run_multiGSEA(multi_omics, metadata,
+                         moduleMembershipDF,
+                         condition_bin = "alp_binary",
+                         module_color  = "brown",
+                         oid_map = oid_map,
+                         met_map = met_map,
+                         targets = targets)
+
+res_alp_green <- run_multiGSEA(multi_omics, metadata,
+                         moduleMembershipDF,
+                         condition_bin = "alp_binary",
+                         module_color  = "green",
+                         oid_map = oid_map,
+                         met_map = met_map,
+                         targets = targets)
+
+
+```
+```{r}
+pdf(file = "../results/WGCNA/enrich_alp_green.pdf", wi = 9, he = 6)
+bar_enrichment_plot(
+         res_tbl    = res_alp_green,
+         module_col = "green",
+         pheno_lab  = "ALP",
+       )
+dev.off()
+
+pdf(file = "../results/WGCNA/enrich_alp_brown.pdf", wi = 9, he = 6)
+bar_enrichment_plot(
+         res_tbl    = res_alp_brown,
+         module_col = "brown",
+         pheno_lab  = "ALP",
+       )
+dev.off()
+```
+
+
+
+### Bilirubin 
+
+```{r}
+res_bilirubin_brown <- run_multiGSEA(multi_omics, metadata,
+                         moduleMembershipDF,
+                         condition_bin = "bilirubin_binary",
+                         module_color  = "brown",
+                         oid_map = oid_map,
+                         met_map = met_map,
+                         targets = targets)
+
+
+
+res_bilirubin_green <- run_multiGSEA(multi_omics, metadata,
+                         moduleMembershipDF,
+                         condition_bin = "bilirubin_binary",
+                         module_color  = "green",
+                         oid_map = oid_map,
+                         met_map = met_map,
+                         targets = targets)
+
+
+
+pdf(file = "../results/WGCNA/enrich_bilirubin_brown", wi = 9, he = 6)
+bar_enrichment_plot(
+         res_tbl    = res_bilirubin_brown,
+         module_col = "brown",
+         pheno_lab  = "Bilirubin",
+       )
+dev.off()
+
+pdf(file = "../results/WGCNA/enrich_bilirubin_green.pdf", wi = 9, he = 6)
+bar_enrichment_plot(
+         res_tbl    = res_bilirubin_green,
+         module_col = "green",
+         pheno_lab  = "Bilirubin",
+       )
+dev.off()
+```
+
+### CCA
+
+```{r}
+res_cca <- run_multiGSEA(multi_omics, metadata,
+                         moduleMembershipDF,
+                         condition_bin = "cca_binary",
+                         module_color  = "yellow",
+                         oid_map = oid_map,
+                         met_map = met_map,
+                         targets = targets)
+
+
+```
+
+```{r}
+pdf(file = "../results/WGCNA/enrich_cca_yellow.pdf", wi = 9, he = 6)
+bar_enrichment_plot(
+         res_tbl    = res_cca,
+         module_col = "yellow",
+         pheno_lab  = "CCA",
+       )
+dev.off()
+```
+
+
+### IBD
+
+
+```{r}
+res_ibd_yellow <- run_multiGSEA(multi_omics, metadata,
+                         moduleMembershipDF,
+                         condition_bin = "ibd_binary",
+                         module_color  = "yellow",
+                         oid_map = oid_map,
+                         met_map = met_map,
+                         targets = targets)
+
+
+res_ibd_brown <- run_multiGSEA(multi_omics, metadata,
+                         moduleMembershipDF,
+                         condition_bin = "ibd_binary",
+                         module_color  = "brown",
+                         oid_map = oid_map,
+                         met_map = met_map,
+                         targets = targets)
+
+
+
+
+pdf(file = "../results/WGCNA/enrich_ibd_brown", wi = 9, he = 6)
+bar_enrichment_plot(
+         res_tbl    = res_ibd_yellow,
+         module_col = "yellow",
+         pheno_lab  = "IBD",
+       )
+dev.off()
+
+
+pdf(file = "../results/WGCNA/enrich_ibd_brown", wi = 9, he = 6)
+bar_enrichment_plot(
+         res_tbl    = res_ibd_brown,
+         module_col = "brown",
+         pheno_lab  = "IBD",
+       )
+dev.off()
+```
+
+
