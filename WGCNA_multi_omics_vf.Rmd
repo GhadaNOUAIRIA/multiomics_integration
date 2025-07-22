@@ -88,6 +88,7 @@ library(caret)         # For preprocessing and feature selection
 library(igraph)        # For network visualization and graph operations
 library(doParallel)    # For enabling parallel computatio
 library(multiGSEA)
+library(dplyr)
 ```
 
 ```{r}
@@ -97,6 +98,8 @@ library(conflicted)    # Handles conflicts between functions from different pack
 conflict_prefer("slice", "dplyr")
 conflict_prefer("rename", "dplyr")
 conflict_prefer("cor", "WGCNA")
+conflict_prefer("select","dplyr")
+conflict_prefer("reduce","purrr")
 ```
 
 ```{r prallel}
@@ -128,9 +131,8 @@ metadata <- read_csv("../data/metadata_preprocessed.csv")
 
 
 medata_OlinkID <- read_csv("../data/metadata_OlinkID.csv")
-medata_metabolites <- read_csv("../data/metadata_metabolomics.csv")
+medata_metabolites <- read_csv("medata_metabolites_kegg_filled.csv")
 ```
-
 
 ## Prepare the data
 
@@ -403,7 +405,6 @@ dissTOM = 1 - TOM
 
 ```
 
-
 We visualize the dendrogram.
 
 ```{r multi_omics_manual_variables_dendrogram}
@@ -463,7 +464,6 @@ mergedMEs = merge$newMEs
 ```
 
 We are not merging any modules and therefore set the cutting line (MEDissThres) below the lowerst branches in the chunk above.
-
 
 We visualize the cut tree with original and merged modules - No changes since we did not merge any modules.
 
@@ -557,9 +557,6 @@ bilirubin: purple, red, brown\
 bilirubin_binary: purple, brown, green
 
 In the following sections we calculate the module mebership and gene significance for the inteeresting module-trait pairs and then export his information into csv files.
-
-
-
 
 ## 4. Focus on each trait
 
@@ -713,10 +710,8 @@ multiomics_score("brown", "Fibrosis", moduleMembershipDF, multi_omics, metadata)
 multiomics_score("green", "Fibrosis", moduleMembershipDF, multi_omics, metadata)
 ```
 
-
-
-
 ### ALP
+
 ```{r}
 pdf(file = "../results/WGCNA/alp_module_membership.pdf", wi = 9, he = 6)
 scatter_MM_GS("brown", "alp_binary", color = "brown")
@@ -728,7 +723,6 @@ pdf(file = "../results/WGCNA/alp_modules_boxplot.pdf", wi = 9, he = 6)
 multiomics_score("brown", "ALP", moduleMembershipDF, multi_omics, metadata)
 multiomics_score("green", "ALP", moduleMembershipDF, multi_omics, metadata)
 ```
-
 
 ### Bilirubin
 
@@ -751,11 +745,11 @@ pdf(file = "../results/WGCNA/CCA_module_membership.pdf", wi = 9, he = 6)
 scatter_MM_GS("yellow", "cca_binary", color = "gold")
 ```
 
-
 ```{r}
 pdf(file = "../results/WGCNA/CCA_modules_boxplot.pdf", wi = 9, he = 6)
 multiomics_score("yellow", "CCA", moduleMembershipDF, multi_omics, metadata)
 ```
+
 ### IBD
 
 ```{r}
@@ -771,9 +765,7 @@ multiomics_score("yellow", "IBD", moduleMembershipDF, multi_omics, metadata)
 multiomics_score("brown", "IBD", moduleMembershipDF, multi_omics, metadata)
 ```
 
-
 ## 5. Global visualisation
-
 
 We create a heatmap that shows the correlation between all of our variables. The bright spots are our modules.
 
@@ -821,7 +813,6 @@ plot(tree,
 dev.off()
 ```
 
-
 ```{r}
 # Compute signed correlation matrix and rename dimensions
 corMAT <- cor(MET, use = "p")
@@ -863,48 +854,14 @@ labeledHeatmap(
 dev.off()
 ```
 
-## 6. Enrichment
+
+## 6. Mapping
 
 
-### Global function
 
 ```{r}
-library(dplyr); library(stringr); library(tibble)
-library(multiMiR); library(graphite); library(multiGSEA)
+library(multiMiR)
 
-calc_diff_log <- function(mat, group) {
-  cca_idx <- group == "CCA"
-  tibble(
-    feature = colnames(mat),
-    logFC   = colMeans(mat[cca_idx , ], na.rm = TRUE) -
-              colMeans(mat[!cca_idx, ], na.rm = TRUE),
-    pval    = apply(mat, 2, function(x) t.test(x ~ group)$p.value)
-  )
-}
-
-
-
-dedup_minp <- function(df) {
-  df %>% arrange(pval) %>% distinct(feature, .keep_all = TRUE)
-}
-
-
-
-clean_empty <- function(df) {
-  df %>% filter(!is.na(feature), feature != "")
-}
-
-
-
-rank_vec <- function(df) {
-  score <- sign(df$logFC) * -log10(df$pval)
-  keep  <- is.finite(score) & !duplicated(df$feature)
-  setNames(score[keep], df$feature[keep])
-}
-
-
-group_vec <- ifelse(metadata$cca_binary == 1, "CCA", "nonCCA")
-group_fac <- factor(group_vec, levels = c("nonCCA", "CCA"))
 
 
 ### Sélection de colonnes
@@ -912,25 +869,14 @@ gene_cols  <- grep("^hsa[-_]",  colnames(multi_omics), value = TRUE, ignore.case
 prot_cols  <- grep("^OID",     colnames(multi_omics), value = TRUE)
 met_cols   <- grep("^(X)?[0-9]+$", colnames(multi_omics), value = TRUE)
 
-### Statistiques brutes
-gene_stats  <- calc_diff_log(multi_omics[, gene_cols ],  group_fac)
-prot_stats  <- calc_diff_log(multi_omics[, prot_cols ],  group_fac)
-met_stats   <- calc_diff_log(multi_omics[, met_cols ],   group_fac)
 
-### --- 1B  Protéines : OID → UniProt et split “A,B” ----------------------
+
 oid_map <- medata_OlinkID %>%
   filter(OlinkID == "Uniprot ID") %>%
   pivot_longer(-OlinkID, names_to = "oid", values_to = "uniprot") %>%
   filter(uniprot != "")
 
-prot_stats <- prot_stats %>%
-  left_join(oid_map, by = c("feature" = "oid")) %>%
-  mutate(feature = coalesce(uniprot, feature)) %>%   # garde UniProt s’il existe
-  select(feature, logFC, pval) %>%
-  mutate(feature = str_remove_all(feature, "\\s+")) %>%  # retire espaces
-  separate_rows(feature, sep = ",")                       # ← Éclate “A,B”
 
-### --- Métabolites : COMP ID → HMDB (sinon KEGG)
 met_map <- medata_metabolites %>%
   select(`COMP ID`, HMDB, KEGG) %>%
   mutate(cid_char = as.character(`COMP ID`),
@@ -938,464 +884,1184 @@ met_map <- medata_metabolites %>%
   filter(id_final != "") %>%
   select(cid_char, id_final)
 
-met_stats <- met_stats %>%
-  left_join(met_map, by = c("feature" = "cid_char")) %>%
-  mutate(feature = coalesce(id_final, feature),
-         feature = str_remove_all(feature, "\\s+")) %>%
-  separate_rows(feature, sep = ",") %>%
-  select(feature, logFC, pval)
+     # hsa-let-7a-1, etc.
 
+## ------------------------------------------------------------------
+## 2. Interroger multiMiR (cibles validées uniquement) --------------
+## ------------------------------------------------------------------
+qry <- get_multimir(
+           mirna   = gene_cols,
+           org     = "hsa",
+           table   = "validated",   # mirecords, miRTarBase, TarBase
+           summary = FALSE           # regroupe les 3 bases
+       )
 
-
-
-### 1D  map gènes cibles (miRTarBase uniquement)
-mir_pat <- regex("^hsa[-_](mir|miR|let)", ignore_case = TRUE)
-mir_vec <- unique(gene_stats$feature[str_detect(gene_stats$feature, mir_pat)])
-
-mm <- get_multimir(mirna = mir_vec, table = "validated",
-                   org = "hsa", summary = FALSE)
-
-targets <- mm@data %>%
+mirna2gene <- qry@data %>% 
   filter(database == "mirtarbase") %>%
-  select(mirna = mature_mirna_id, target_symbol) %>% distinct()
-```
-```{r}
-targets <- mm@data %>%
-  filter(database == "mirtarbase") %>%
-  select(mirna = mature_mirna_id, target_symbol) %>% distinct()
+  select(mature_mirna_id, target_symbol) %>% 
+  distinct()
+
 ```
 
 
 
+##7. Enrichissement par module + diablo pour KEGG
+
+### Combisaison des deux resultats
 
 ```{r}
-run_multiGSEA <- function(multi_omics, metadata,
-                          moduleMembershipDF,
-                          condition_bin,          # nom de la colonne binaire
-                          module_color,           # ex. "yellow"
-                          oid_map, met_map, targets,
-                          dbs = c("kegg", "reactome")) {
+library(readr)
+library(dplyr)
+library(ggVennDiagram)
+library(ggplot2)
 
-  ## ─── 0. petits helpers ───────────────────────────────────────────────
-  calc_diff_log <- function(mat, group) {
-    pos <- group == "POS"
-    tibble(
-      feature = colnames(mat),
-      logFC   = colMeans(mat[pos , ], na.rm = TRUE) -
-                colMeans(mat[!pos, ], na.rm = TRUE),
-      pval    = apply(mat, 2, function(x) t.test(x ~ group)$p.value)
-    )
-  }
-  dedup_minp <- function(df) df %>% arrange(pval) %>% distinct(feature,.keep_all=TRUE)
-  clean_empty<- function(df) df %>% filter(!is.na(feature), feature != "")
-  rank_vec   <- function(df) {
-      s <- sign(df$logFC)*-log10(df$pval)
-      setNames(s[is.finite(s) & !duplicated(df$feature)], df$feature[is.finite(s)&!duplicated(df$feature)])
-  }
-
-  ## ─── 1. groupe POS / NEG ────────────────────────────────────────────
-  group_fac <- factor(ifelse(metadata[[condition_bin]] == 1, "POS", "NEG"),
-                      levels = c("NEG", "POS"))
-
-  ## ─── 2. stats brutes et mapping ID ──────────────────────────────────
-  gene_cols <- grep("^hsa[-_]",  colnames(multi_omics), value = TRUE, ignore.case = TRUE)
-  prot_cols <- grep("^OID",     colnames(multi_omics), value = TRUE)
-  met_cols  <- grep("^(X)?[0-9]+$", colnames(multi_omics), value = TRUE)
-
-  gene_stats <- calc_diff_log(multi_omics[, gene_cols], group_fac)
-  prot_stats <- calc_diff_log(multi_omics[, prot_cols], group_fac)
-  met_stats  <- calc_diff_log(multi_omics[, met_cols ], group_fac)
-
-  ## protéines
-  prot_stats <- prot_stats %>%
-      left_join(oid_map, by = c("feature" = "oid")) %>%
-      mutate(feature = coalesce(uniprot, feature)) %>%
-      select(feature, logFC, pval) %>%
-      mutate(feature = str_remove_all(feature, "\\s+")) %>%
-      separate_rows(feature, sep = ",")
-
-  ## métabolites
-  met_stats <- met_stats %>%
-      left_join(met_map, by = c("feature" = "cid_char")) %>%
-      mutate(feature = coalesce(id_final, feature),
-             feature = str_remove_all(feature, "\\s+")) %>%
-      separate_rows(feature, sep = ",") %>%
-      select(feature, logFC, pval)
-
-  ## miRNA → gènes
-  mir_pat <- regex("^hsa[-_](mir|miR|let)", ignore_case = TRUE)
-  mir_vec <- unique(gene_stats$feature[str_detect(gene_stats$feature, mir_pat)])
-
-  mir_rows  <- gene_stats %>% filter(str_detect(feature, mir_pat))
-  gene_keep <- gene_stats %>% filter(!str_detect(feature, mir_pat))
-
-  mir_prop <- mir_rows %>%
-      rename(mirna = feature) %>%
-      inner_join(targets, by = c("mirna")) %>%
-      mutate(feature = target_symbol, logFC = -logFC) %>%
-      select(feature, logFC, pval) %>%
-      group_by(feature) %>%
-      summarise(logFC = mean(logFC), pval = min(pval), .groups = "drop")
-
-  gene_stats <- bind_rows(gene_keep, mir_prop)
-
-  ## nettoyer / dé-doublonner
-  gene_stats <- gene_stats %>% clean_empty() %>% dedup_minp()
-  prot_stats <- prot_stats %>% clean_empty() %>% dedup_minp()
-  met_stats  <- met_stats  %>% clean_empty() %>% dedup_minp()
-
-  ranks_gene <- rank_vec(gene_stats)
-  ranks_prot <- rank_vec(prot_stats)
-  ranks_met  <- rank_vec(met_stats)
-
-  omics_ranked <- list(transcriptome = ranks_gene,
-                       proteome      = ranks_prot,
-                       metabolome    = ranks_met)
-
-  ## ─── 3. définitions de voies & enrichissement ───────────────────────
-  path_defs <- getMultiOmicsFeatures(
-      dbs   = dbs,
-      layer = names(omics_ranked),
-      returnTranscriptome = "SYMBOL",
-      returnProteome      = "UNIPROT",
-      returnMetabolome    = "HMDB",
-      useLocal = FALSE)
-
-  enrich_scores <- multiGSEA(path_defs, omics_ranked)
-
-  df <- extractPvalues(enrich_scores, pathwayNames = names(path_defs[[1]])) %>%
-        mutate(combined_pval  = combinePvalues(., method = "stouffer"),
-               combined_padj  = p.adjust(combined_pval, method = "BH"),
-               pathway = names(path_defs[[1]]))
-
-  ## ─── 4. empreinte du module demandé ─────────────────────────────────
-  yellow_features <- moduleMembershipDF %>%
-      filter(ModuleColor == module_color) %>% pull(Variable)
-
-  ## mapping identique à plus haut (résumé)
-  prot_y <- tibble(orig = yellow_features) %>%
-      filter(str_detect(orig, "^OID")) %>%
-      left_join(oid_map, by = c("orig" = "oid")) %>%
-      transmute(feature = uniprot) %>% filter(!is.na(feature), feature!="")
-
-  met_y  <- tibble(orig = yellow_features) %>%
-      filter(str_detect(orig, "^(X)?[0-9]+$")) %>%
-      mutate(cid_char = str_remove(orig, "^X")) %>%
-      left_join(met_map, by = "cid_char") %>%
-      transmute(feature = id_final) %>% filter(!is.na(feature), feature!="")
-
-  mir_y  <- tibble(orig = yellow_features) %>%
-      filter(str_detect(orig, mir_pat)) %>%
-      inner_join(targets, by = c("orig" = "mirna")) %>%
-      transmute(feature = target_symbol)
-
-  gene_y <- tibble(feature = yellow_features) %>%
-      filter(!feature %in% c(prot_y$feature, met_y$feature, mir_y$feature),
-             !str_detect(feature, "^OID"),
-             !str_detect(feature, "^(X)?[0-9]+$"),
-             !str_detect(feature, mir_pat))
-
-  yellow_map <- list(
-      transcriptome = unique(c(gene_y$feature, mir_y$feature)),
-      proteome      = unique(prot_y$feature),
-      metabolome    = unique(met_y$feature))
+module_disease_analysis <- function(couleur, maladie) {
   
+  # Étape 1 : fichier de la maladie
+  maladie_file <- paste0("../results/mixOmics_", maladie, "_binary.csv")
+  maladie_data <- read_csv(maladie_file, show_col_types = FALSE)
+  compounds_list <- maladie_data$compounds
   
-  mod_size <- sapply(yellow_map, length)      # vecteur named
-  mod_size_total <- sum(mod_size)
-
-  count_hits <- function(pw_list, hits)
-      sapply(pw_list, function(m) sum(m %in% hits))
+  # Étape 2 : variables du module couleur
+  filtered_module <- moduleMembershipDF %>%
+    filter(ModuleColor == couleur)
+  variables_list <- rownames(filtered_module)
   
+  # 3. Diagramme de Venn  ────────────────────────────────────────────────
+  venn_plot <- ggVennDiagram(
+    list(Compounds = compounds_list,
+         Variables = variables_list),
+    label = "count"
+  ) +
+    theme_void()
   
-
-
-  hits_df <- tibble(
-      pathway      = names(path_defs[[1]]),
-      hit_gene     = count_hits(path_defs$transcriptome, yellow_map$transcriptome),
-      hit_prot     = count_hits(path_defs$proteome,      yellow_map$proteome),
-      hit_metab    = count_hits(path_defs$metabolome,    yellow_map$metabolome)
-  ) %>%   mutate(
-    pct_gene  = hit_gene  / mod_size["transcriptome"] * 100,
-    pct_prot  = hit_prot  / mod_size["proteome"]      * 100,
-    pct_metab = hit_metab / mod_size["metabolome"]    * 100,
-    total_hits = hit_gene + hit_prot + hit_metab,
-    pct_total  = total_hits / mod_size_total * 100
-  )
-
-  ## ─── 5. fusion & retour ─────────────────────────────────────────────
-  res <- df %>% left_join(hits_df, by = "pathway") %>%
-         arrange(combined_padj)
-
-  return(res)
+  print(venn_plot)
+  
+  # Étape 4 : fusion des listes puis filtrage
+  merged_list <- union(compounds_list, variables_list)
+  filtered_multiomics <- multi_omics[, intersect(colnames(multi_omics), merged_list)]
+  
+  return(filtered_multiomics)
 }
 
+# Exemple d’appel :
+resultat <- module_disease_analysis("yellow", "cca")
+```
+
+### Séparation des variables
+
+```{r}
+### Sélection de colonnes
+gene_cols  <- grep("^hsa[-_]",  colnames(resultat), value = TRUE, ignore.case = TRUE)
+prot_cols  <- grep("^OID",     colnames(resultat), value = TRUE)
+met_cols   <- grep("^(X)?[0-9]+$", colnames(resultat), value = TRUE)
 
 
+print(length(gene_cols))
+print(length(prot_cols))
+print(length(met_cols))
+```
 
+### Enrichissement
 
-# ──────────────────────────────────────────────────────────────────────────
-#  bar_enrichment_plot()
-#      • res_tbl     : data-frame produced by the workflow (must contain
-#                      pathway, combined_padj, pct_total columns)
-#      • module_col  : colour / name of the WGCNA module (for the title)
-#      • pheno_lab   : short label of the comparison (default "CCA")
-#      • top_n       : how many pathways to draw (default 20)
-#      • maxlen      : maximum visible chars per label (*excluding* star)
-#      • palette     : any scico palette (default = "vik")
-#  returns a ggplot object
-# ──────────────────────────────────────────────────────────────────────────
-bar_enrichment_plot <- function(res_tbl,
-                                module_col = "Yellow",
-                                pheno_lab  = "CCA",
-                                top_n      = 20,
-                                maxlen     = 50,
-                                palette    = "vik") {
-
+```{r}
+library(clusterProfiler)
+library(dplyr); library(stringr); library(tibble)
+library(multiMiR); library(graphite); library(multiGSEA)
   library(dplyr); library(stringr); library(purrr)
   library(ggplot2); library(scico)
 
-  plot_df <- res_tbl %>% 
-    filter(!is.na(combined_padj)) %>% 
-    arrange(combined_padj) %>% 
-    slice_head(n = top_n) %>% 
+library(readr);  library(dplyr); library(purrr);  library(tidyr)
+library(clusterProfiler); library(enrichplot);    library(ggplot2)
+library(metap);  library(org.Hs.eg.db);           library(ggVennDiagram)
+
+
+```
+
+
+```{r}
+library(org.Hs.eg.db)
+
+################metabo################
+
+
+kegg_vec <- medata_metabolites %>% 
+  filter(as.character(`COMP ID`) %in% met_cols) %>%          # étape 1-2
+  filter(!is.na(KEGG), !KEGG %in% c("NA", "undefined")) %>%  # étape 3
+  pull(KEGG) %>%                                             # vecteur KEGG
+  unique()  
+
+kegg_split  <- strsplit(kegg_vec, ",")   # sépare chaque élément sur la virgule
+kegg_flat   <- unlist(kegg_split)        # aplatit la liste en vecteur
+kegg_clean  <- trimws(kegg_flat)         # enlève les espaces éventuels
+kegg_unique <- unique(kegg_clean)        # retire les doublons
+
+
+
+ora_kegg_cpd <- enrichKEGG(
+  gene          = kegg_unique,   # vecteur de C-numbers KEGG (ex. "C00022")
+  organism      = "cpd",          
+  keyType       = "kegg",           # ou "compound" – c’est équivalent
+  pvalueCutoff  = 0.05,
+  pAdjustMethod = "BH",
+  maxGSSize     = 500
+)
+
+
+
+
+################protein################
+
+proteine_uniprot <- oid_map %>%
+  filter(`oid` %in% prot_cols)
+
+# Préparer le vecteur d'intérêts
+prot_interest <- proteine_uniprot$uniprot
+
+# Effectuer l'analyse ORA
+ora_kegg_prot <- enrichKEGG(
+  gene           = prot_interest,  # ton vecteur d’accessions UniProt (ex. "P04637")
+  organism       = "hsa",          # code KEGG pour Homo sapiens
+  keyType        = "uniprot",      # ou "ncbi-proteinid" selon tes IDs
+  pvalueCutoff   = 0.05,
+  pAdjustMethod  = "BH"
+)
+
+
+
+
+
+################miRNA################
+
+mirna_symbol <- mirna2gene %>%
+  filter(`mature_mirna_id` %in% gene_cols)
+
+gene_interest <- mirna_symbol$target_symbol |>               # extrait la colonne
+                 na.omit()            |>                      # retire les NA éventuels
+                 unique()                                     # enlève les doublons
+
+
+
+eg <- bitr(
+  gene_interest,          # votre vecteur de symboles
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+
+# 
+ora_kegg_gene <- enrichKEGG(
+  gene            = eg$ENTREZID,
+  keyType         = "kegg",
+  organism        = "hsa",
+  pAdjustMethod   = "BH",
+  pvalueCutoff    = 0.05,
+  maxGSSize       = 500
+)
+
+
+
+
+```
+
+
+### Fusion des pavlues
+
+```{r}
+library(dplyr)
+library(purrr)
+###############################################################################
+# 0)  LIBRAIRIES --------------------------------------------------------------
+###############################################################################
+library(tidyverse)        # dplyr, purrr, tibble, …
+library(readxl)           # si besoin d’un xlsx externe
+library(metap)            # sumlog, sumz, sump
+library(clusterProfiler)  # enrichResult, pairwise_termsim
+library(enrichplot)       # treeplot
+library(ggplot2)          # ggsave
+
+###############################################################################
+# 1)  TABLEAUX KEGG (p-values) ------------------------------------------------
+###############################################################################
+normalize_pathway <- function(id) sub("^(hsa|map)", "", id)
+
+prot_df <- ora_kegg_prot@result %>% 
+  as_tibble() %>% 
+  transmute(path_num   = normalize_pathway(ID),
+            description = Description,
+            prot_padj   = p.adjust)
+
+gene_df <- ora_kegg_gene@result %>% 
+  as_tibble() %>% 
+  transmute(path_num   = normalize_pathway(ID),
+            description = Description,
+            gene_padj   = p.adjust)
+
+met_df  <- ora_kegg_cpd@result %>% 
+  as_tibble() %>% 
+  transmute(path_num   = normalize_pathway(ID),
+            description = Description,
+            met_padj    = p.adjust)      # ou PVALUE_ADJ_FDR
+
+###############################################################################
+# 2)  FUSION DES p-VALUES -----------------------------------------------------
+###############################################################################
+merged1 <- list(gene_df, prot_df, met_df) %>% 
+  purrr::reduce(full_join, by = "path_num") %>% 
+  dplyr::mutate(description = coalesce(description.x, description.y, description)) %>% 
+  dplyr::select(path_num, description, ends_with("_padj"))
+
+###############################################################################
+# 3)  COMBINAISON DES p-VALUES (Stouffer) ------------------------------------
+###############################################################################
+combinePvalues <- function(df,
+                           method      = "stouffer",
+                           col_pattern = "_padj") {
+
+  cols <- grep(col_pattern, colnames(df))
+
+  apply(df[, cols], 1, function(row){
+    row <- row[!is.na(row)]
+    row[row == 0] <- .Machine$double.xmin
+    if (length(row) >= 2) return(sumz(row)$p)  # Stouffer
+    if (length(row) == 1) return(row)
+    NA_real_
+  })
+}
+
+merged_kegg <- merged1 %>% 
+  mutate(p_comb_stouffer      = combinePvalues(cur_data()),
+         p_comb_stouffer_adj  = p.adjust(p_comb_stouffer, method = "BH"))
+
+sig <- merged_kegg %>% filter(p_comb_stouffer_adj <= 0.05)
+
+###############################################################################
+# 4)  GENESETS réels (gène / protéine / composé) -----------------------------
+###############################################################################
+split_slash <- function(x) ifelse(is.na(x) | x == "", character(0),
+                                  strsplit(x, "/", fixed = TRUE))
+
+## --- depuis les trois enrichissements ---------------------------------------
+genesets_gene <- ora_kegg_gene@result %>% 
+  as_tibble() %>% 
+  transmute(path_num = normalize_pathway(ID),
+            gs       = map(geneID, split_slash))
+
+genesets_prot <- ora_kegg_prot@result %>% 
+  as_tibble() %>% 
+  transmute(path_num = normalize_pathway(ID),
+            gs       = map(geneID, split_slash))
+
+genesets_met  <- ora_kegg_cpd@result %>% 
+  as_tibble() %>% 
+  transmute(path_num = normalize_pathway(ID),
+            gs       = map(geneID, split_slash))
+
+## --- fusion et union ---------------------------------------------------------
+genesets_all <- bind_rows(genesets_gene, genesets_prot, genesets_met) %>% 
+  group_by(path_num) %>% 
+  summarise(geneSets = list(unique(unlist(gs))),
+            Count    = lengths(geneSets),
+            .groups  = "drop")
+
+###############################################################################
+# 5)  Tableau enrichResult complet -------------------------------------------
+###############################################################################
+sig2 <- sig %>% left_join(genesets_all, by = "path_num")
+
+```
+
+### Treeplot sans priorité aux 3 omics
+
+
+```{r}
+###############################################################################
+# 4)  CONVERSION EN enrichResult ----------------------------------------------
+###############################################################################
+res_df <- sig2 %>% 
+  transmute(
+    ID          = path_num,
+    Description = description,
+    pvalue      = p_comb_stouffer,
+    p.adjust    = p_comb_stouffer_adj,
+    qvalue      = p_comb_stouffer_adj,
+    geneID      = map_chr(geneSets, paste, collapse = "/"),
+    Count,
+    GeneRatio   = paste0(Count, "/", Count),   # placeholders
+    BgRatio     = GeneRatio
+  ) %>% 
+  as.data.frame()
+
+er <- new("enrichResult",
+          result        = res_df,
+          geneSets      = setNames(sig2$geneSets, sig2$path_num),
+          pvalueCutoff  = 1,
+          pAdjustMethod = "none",
+          qvalueCutoff  = 1,
+          organism      = "UNKNOWN",
+          keytype       = "UNKNOWN",
+          readable      = FALSE)
+
+```
+
+```{r}
+# 1)  RECONSTRUIRE les geneSets à partir de er@result -------------------------
+###############################################################################
+## er est l’objet enrichResult que vous avez déjà produit
+gs_list <- setNames(
+  lapply(er@result$geneID, function(s) {
+    strsplit(s, "/", fixed = TRUE)[[1]] |> unique()
+  }),
+  er@result$ID
+)
+
+## on met à jour l’objet (utile si gs_list diffère des anciens geneSets)
+er@geneSets <- gs_list
+er@result$Count      <- lengths(gs_list)
+er@result$GeneRatio  <- paste0(er@result$Count, "/", er@result$Count)
+er@result$BgRatio    <- er@result$GeneRatio    # placeholder
+
+###############################################################################
+# 2)  MATRICE DE SIMILARITÉ Jaccard (manuelle) --------------------------------
+###############################################################################
+ids <- names(gs_list)
+n   <- length(ids)
+
+jac <- matrix(0, n, n, dimnames = list(ids, ids))
+
+for (i in seq_len(n)) {
+  gi <- gs_list[[i]]
+  for (j in i:n) {
+    gj <- gs_list[[j]]
+    inter <- length(intersect(gi, gj))
+    uni   <- length(unique(c(gi, gj)))
+    val   <- ifelse(uni == 0, 0, inter / uni)
+    jac[i, j] <- val
+    jac[j, i] <- val
+  }
+}
+
+## Injecter la matrice dans l’objet
+attr(er, "termsim") <- jac          # enrichplot la détecte ici
+
+
+###############################################################################
+# 3bis)  REMPLACER les IDs par « ID: Description » pour l’affichage ----------
+###############################################################################
+## ── remplacement simple ──────────────────────────────────────────────────
+lab_vec <- with(er@result,
+                setNames(Description, ID))   # ← plus de "ID: "
+
+## puis les trois lignes comme avant
+rownames(jac) <- colnames(jac) <- lab_vec[rownames(jac)]
+names(gs_list)      <- lab_vec[names(gs_list)]
+er@result$ID        <- lab_vec[er@result$ID]
+attr(er, "termsim") <- jac            # jac est renommée ici même  
+
+###############################################################################
+# 3)  TREEPLOT ---------------------------------------------------------------
+###############################################################################
+p <- treeplot(er,
+              showCategory   = 30,
+              cluster.params = list(method = "average"),
+              label_format   = 60)          # coupe après 60 caractères
+
+ggsave("treeplot_kegg_manual.pdf",
+       p, width = 16.5, height = 11.7, units = "in")
+```
+
+
+### Treeplot avec priorité aux 3 omics
+
+
+```{r}
+###############################################################################
+# 0)  SÉLECTION & CLASSEMENT DES TERMES POUR LE TREEPLOT -----------------------
+###############################################################################
+sig2_ranked <- sig2 %>% 
+  mutate(
+    nOmics = (!is.na(gene_padj)) + (!is.na(prot_padj)) + (!is.na(met_padj))
+  ) %>% 
+  filter(p_comb_stouffer_adj < 0.05) %>%          # seuil global (FDR)
+  arrange(desc(nOmics), p_comb_stouffer_adj)      # 3 → 2 → 1, puis FDR
+
+top30_ids <- head(sig2_ranked$path_num, 40)       # on garde au plus 30
+
+###############################################################################
+# 4)  CONVERSION EN enrichResult ----------------------------------------------
+###############################################################################
+res_df <- sig2 %>%                                # on garde TOUT pour er
+  transmute(
+    ID          = path_num,
+    Description = description,
+    pvalue      = p_comb_stouffer,
+    p.adjust    = p_comb_stouffer_adj,
+    qvalue      = p_comb_stouffer_adj,
+    geneID      = map_chr(geneSets, paste, collapse = "/"),
+    Count,
+    GeneRatio   = paste0(Count, "/", Count),       # placeholders
+    BgRatio     = GeneRatio
+  ) %>% 
+  as.data.frame()
+
+er <- new("enrichResult",
+          result        = res_df,
+          geneSets      = setNames(sig2$geneSets, sig2$path_num),
+          pvalueCutoff  = 1,
+          pAdjustMethod = "none",
+          qvalueCutoff  = 1,
+          organism      = "UNKNOWN",
+          keytype       = "UNKNOWN",
+          readable      = FALSE)
+
+###############################################################################
+# 1)  RECONSTRUIRE les geneSets à partir de er@result -------------------------
+###############################################################################
+gs_list <- setNames(
+  lapply(er@result$geneID, function(s) strsplit(s, "/", fixed = TRUE)[[1]] |> unique()),
+  er@result$ID
+)
+
+er@geneSets            <- gs_list
+er@result$Count        <- lengths(gs_list)
+er@result$GeneRatio    <- paste0(er@result$Count, "/", er@result$Count)
+er@result$BgRatio      <- er@result$GeneRatio          # placeholder
+
+###############################################################################
+# 2)  MATRICE DE SIMILARITÉ Jaccard (manuelle) --------------------------------
+###############################################################################
+ids <- names(gs_list); n <- length(ids)
+jac <- matrix(0, n, n, dimnames = list(ids, ids))
+for (i in seq_len(n)) {
+  gi <- gs_list[[i]]
+  for (j in i:n) {
+    gj <- gs_list[[j]]
+    inter <- length(intersect(gi, gj))
+    uni   <- length(unique(c(gi, gj)))
+    val   <- ifelse(uni == 0, 0, inter / uni)
+    jac[i, j] <- val; jac[j, i] <- val
+  }
+}
+attr(er, "termsim") <- jac
+
+###############################################################################
+# 3bis)  REMPLACER les IDs par « Description » --------------------------------
+###############################################################################
+lab_vec <- with(er@result, setNames(Description, ID))
+rownames(jac)        <- colnames(jac) <- lab_vec[rownames(jac)]
+names(gs_list)       <- lab_vec[names(gs_list)]
+er@result$ID         <- lab_vec[er@result$ID]
+attr(er, "termsim")  <- jac           # jac est renommée ici même  
+
+###############################################################################
+# 3)  TREEPLOT ---------------------------------------------------------------
+###############################################################################
+## Correspondance path_num → libellé final
+show_vec <- lab_vec[top30_ids] |> unname()
+
+
+cluster_cols <- c(
+  "#2ca02c",  # Rouge  (cluster_1)
+  "#33caff",  # Vert   (cluster_2)
+  "#9467bd",  # Bleu   (cluster_3)
+  "#d62727",  # Jaune  (cluster_4)
+  "#ffdf33"   # Violet (cluster_5)
+)
+
+# 2) appel direct : on fournit la palette via cluster.params$color
+p <- treeplot(
+  er,
+  showCategory   = show_vec,
+  cluster.params = list(
+    method = "average",   # ou ward.D, etc.
+    n      = 5,           # nb de groupes
+    color  = cluster_cols # <- palette perso
+  ),
+  label_format   = 60,     # comme avant
+  color          = "p.adjust" # laisse la scale continue pour les points
+)
+
+
+
+ggsave("treeplot_kegg_manuals.pdf",
+       p, width = 16.5, height = 11.7, units = "in")
+```
+
+
+### Extraction des omics unique par term et cluster 
+
+```{r}
+###############################################################################
+## 0)  Préparatifs
+###############################################################################
+library(dplyr)
+
+min_prop <- 0.75          # ≥ 75 % des termes du cluster
+
+## Objets déjà en mémoire :
+##   • er              : enrichResult
+##   • p               : treeplot – on y prend p[["data"]]
+##   • eg              : data.frame  SYMBOL, ENTREZID
+##   • mirna_symbol    : data.frame  mature_mirna_id, target_symbol
+
+###############################################################################
+## 1)  Table globale TERME → IDENTIFIANTS (gènes, composés, protéines…)
+###############################################################################
+term_to_ids <- setNames(
+  lapply(er@result$geneID, \(s) unique(strsplit(s, "/", fixed = TRUE)[[1]])),
+  er@result$ID
+)
+
+###############################################################################
+## 2)  Conteneurs (identifiants bruts)
+###############################################################################
+representative_ids_by_cluster <- list()
+unique_ids_by_term_by_cluster <- list()
+
+###############################################################################
+## 3)  Boucle sur les clusters
+###############################################################################
+cluster_ids <- p[["data"]] |>
+  filter(isTip, !is.na(group), grepl("^cluster_", group)) |>
+  pull(group) |>
+  unique()
+
+for (cl in cluster_ids) {
+
+  ## a) Termes (labels) du cluster
+  terms <- p[["data"]] |>
+    filter(isTip, group == cl, !is.na(label)) |>
+    pull(label) |>
+    unique()
+  if (!length(terms)) next   # cluster vide → on saute
+
+  ## b) Sous-ensemble TERME → ids pour ce cluster
+  ids_by_term <- term_to_ids[terms]
+
+  ## c) Identifiants représentatifs (≥ min_prop des termes)
+  freq <- table(unlist(ids_by_term))
+  representative_ids_by_cluster[[cl]] <-
+    sort(names(freq)[freq / length(ids_by_term) >= min_prop])
+
+  ## d) Identifiants uniques à chaque terme  (unicité globale)
+  uniq <- lapply(names(ids_by_term), function(term) {
+    setdiff(ids_by_term[[term]],
+            unlist(term_to_ids[names(term_to_ids) != term]))
+  })
+  names(uniq) <- names(ids_by_term)
+  unique_ids_by_term_by_cluster[[cl]] <- uniq
+}
+
+
+###############################################################################
+## 5)  Conversion des identifiants GÈNES (numériques) → miRNA
+##     – on garde intact tout identifiant contenant des lettres
+###############################################################################
+
+## Dictionnaires
+geneid_to_symbol <- setNames(eg$SYMBOL, as.character(eg$ENTREZID))
+symbol_to_mirnas <- split(mirna_symbol$mature_mirna_id,
+                          mirna_symbol$target_symbol)
+
+## Fonction : ids mixtes → miRNA (pour les gènes) + ids non-gènes inchangés
+ids2miRNAs_keep_others <- function(ids) {
+  ids           <- as.character(ids)               # sécurité
+  id_is_numeric <- grepl("^\\d+$", ids)
+  gene_ids      <- ids[id_is_numeric]
+  other_ids     <- ids[!id_is_numeric]
+
+  ## GENEID → SYMBOL
+  syms <- geneid_to_symbol[gene_ids]
+  syms <- syms[!is.na(syms)]
+
+  ## SYMBOL → miRNA
+  miRs <- unique(unlist(symbol_to_mirnas[syms]))
+
+  unique(c(other_ids, miRs))
+}
+
+## a) Représentatifs : miRNA + composés/protéines inchangés
+representative_mixed_by_cluster <-
+  lapply(representative_ids_by_cluster, ids2miRNAs_keep_others)
+
+## b) Uniques par terme  (‼️ double lapply)
+unique_mixed_by_term_by_cluster <-
+  lapply(unique_ids_by_term_by_cluster, function(clist)
+    lapply(clist, ids2miRNAs_keep_others))
+
+
+###############################################################################
+## 6)  Objets finaux
+##     • representative_mixed_by_cluster        # miRNA + ids non gènes
+##     • unique_mixed_by_term_by_cluster        # idem, par terme & cluster
+###############################################################################
+########################################################################
+
+
+
+
+
+```
+
+```{r}
+## ── 0. Pré‑requis ------------------------------------------------------------
+library(tidyverse)   # ggplot2 + purrr + tibble…
+
+## ── 1. Récupérer l’objet liste ----------------------------------------------
+# Supposons qu’il est déjà en mémoire:
+#   str(representative_mixed_by_cluster)
+#   List of 5
+clusters <- representative_mixed_by_cluster          # plus lisible
+
+## ── 2. Transformer au format «long» ----------------------------------------
+df <- imap_dfr(clusters, ~tibble(id = .x, cluster = .y))
+
+# axe Y dans un ordre stable (alphabétique, puis renversé pour affichage top‑down)
+all_ids <- sort(unique(df$id))
+df$id   <- factor(df$id, levels = rev(all_ids))
+
+# assure l’ordre des clusters (colonne X)
+df$cluster <- factor(df$cluster, levels = names(clusters))
+
+## ── 3. Palette manuelle ------------------------------------------------------
+cluster_cols <- c(
+  cluster_1 =   "#2ca02c",  # Rouge  (cluster_1)
+  cluster_2 =  "#33caff",  # Vert   (cluster_2)
+  cluster_3 = "#9467bd",  # Bleu   (cluster_3)
+  cluster_4 = "#d62727",  # Jaune  (cluster_4)
+  cluster_5 = "#ffdf33"
+)[names(clusters)]          # garde l’ordre exact
+
+
+## ── 4. Construire la figure --------------------------------------------------
+p <- ggplot(df, aes(x = cluster, y = id)) +
+  geom_tile(aes(fill = cluster), colour = "white", width = .9, height = .9) +
+  scale_fill_manual(values = cluster_cols, guide = "none") +
+  labs(
+    title = "Omics présents dans 75% des clusters",
+    x = "Cluster",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid   = element_blank()
+  )
+
+## ── 5. Sauvegarde PDF grand format ------------------------------------------
+pdf("cluster_heatmap.pdf", width = 10, height = 14)  # format portrait XXL
+print(p)
+dev.off()
+
+# ➜ Le fichier 'cluster_heatmap.pdf' est prêt dans le répertoire de travail.
+#   Utilise par ex. getwd() pour le localiser si besoin.
+```
+
+
+
+
+### 12. Fonction KEGG
+
+```{r}
+###############################################################################
+#  FONCTION PRINCIPALE : multi_module_kegg_pipeline                           #
+###############################################################################
+multi_module_disease_analysis <- function(modules, maladie, show_venn = TRUE) {
+
+  # --- 1. Compounds de la maladie -------------------------------------------
+  maladie_file   <- paste0("../results/mixOmics_", maladie, "_binary.csv")
+  compounds_list <- readr::read_csv(maladie_file, show_col_types = FALSE)$compounds
+
+  # --- 2. Variables de tous les modules -------------------------------------
+  variables_list_union <- moduleMembershipDF |>
+    dplyr::filter(ModuleColor %in% modules) |>
+    rownames()
+
+  # --- 3. Diagramme de Venn unique ------------------------------------------
+  if (show_venn) {
+    ven <- ggVennDiagram::ggVennDiagram(
+             list(Compounds = compounds_list,
+                  Variables = variables_list_union),
+             label = "count") +
+           ggplot2::theme_void()
+    print(ven)
+  }
+
+  # --- 4. Jeu multi-omics filtré --------------------------------------------
+  merged_list         <- union(compounds_list, variables_list_union)
+  filtered_multiomics <- multi_omics[, intersect(colnames(multi_omics), merged_list)]
+
+  return(filtered_multiomics)
+}
+
+
+
+
+# ---- fonction pour UN identifiant ----
+get_kegg_name <- function(id) {
+  url <- paste0("https://rest.kegg.jp/list/cpd:", id)   # endpoint « list »
+  res <- GET(url)
+  stop_for_status(res)
+  txt <- content(res, "text", encoding = "UTF-8")
+  
+  # format : "cpd:C00186\tL‑Glutamate\n"
+  strsplit(txt, "\t")[[1]][2] |>
+    trimws()
+}
+
+
+
+
+
+# ---- fonction qui récupère le nom recommandé pour UN identifiant ----
+get_uniprot_name <- function(id) {
+  url <- paste0("https://rest.uniprot.org/uniprotkb/", id, ".json")
+  res <- GET(url, accept_json())
+  stop_for_status(res)                  # signale une erreur réseau/API
+  j <- fromJSON(content(res, "text", encoding = "UTF-8"))
+  
+  # chemin JSON vers le nom recommandé
+  j$proteinDescription$recommendedName$fullName$value
+}
+
+
+
+multi_module_kegg_pipeline <- function(modules,
+                                       maladie,
+                                       p_cutoff = 0.05,
+                                       out_pdf  = "treeplot_kegg_manual.pdf",
+                                       verbose  = TRUE) {
+
+  ## 0)  LIBRAIRIES -----------------------------------------------------------
+  suppressPackageStartupMessages({
+    library(readr);  library(dplyr); library(purrr);  library(tidyr)
+    library(clusterProfiler); library(enrichplot);    library(ggplot2)
+    library(metap);  library(org.Hs.eg.db);           library(ggVennDiagram)
+    library(tibble)         # pour tibble::tibble
+  })
+
+  ## 1)  JEU MULTI‑OMICS UNIQUE ----------------------------------------------
+  if (verbose) message("➜ Étape 1 : construction du jeu multi‑omics…")
+  multi_omics_mod <- multi_module_disease_analysis(modules, maladie,
+                                                   show_venn = verbose)
+
+  ## 2)  SÉPARATION DES VARIABLES --------------------------------------------
+  if (verbose) message("➜ Étape 2 : séparation des gènes / prot / métabo…")
+  gene_cols <- grep("^hsa[-_]",      colnames(multi_omics_mod), value = TRUE,
+                    ignore.case = TRUE)
+  prot_cols <- grep("^OID",          colnames(multi_omics_mod), value = TRUE)
+  met_cols  <- grep("^(X)?[0-9]+$",  colnames(multi_omics_mod), value = TRUE)
+
+  ## 3)  ENRICHISSEMENTS KEGG -------------------------------------------------
+  if (verbose) message("➜ Étape 3 : enrichissements KEGG…")
+
+  # 3a) Métabolites
+  kegg_unique <- medata_metabolites %>%
+    filter(as.character(`COMP ID`) %in% met_cols,
+           !is.na(KEGG), !KEGG %in% c("NA", "undefined")) %>%
+    pull(KEGG) |> strsplit(",") |> unlist() |> trimws() |> unique()
+
+  ora_kegg_cpd <- enrichKEGG(gene = kegg_unique, organism = "cpd",
+                             keyType = "kegg", pvalueCutoff = 1,
+                             pAdjustMethod = "BH", maxGSSize = 500)
+
+  # 3b) Protéines
+  prot_interest <- oid_map %>%
+    filter(oid %in% prot_cols) %>% pull(uniprot) %>% unique()
+
+  ora_kegg_prot <- enrichKEGG(gene = prot_interest, organism = "hsa",
+                              keyType = "uniprot", pvalueCutoff = 1,
+                              pAdjustMethod = "BH")
+
+  # 3c) miRNA → gènes cibles
+  gene_interest <- mirna2gene %>%
+    filter(mature_mirna_id %in% gene_cols) %>%
+    pull(target_symbol) %>% na.omit() %>% unique()
+
+  eg <- bitr(gene_interest, fromType = "SYMBOL", toType = "ENTREZID",
+             OrgDb = org.Hs.eg.db)
+
+  ora_kegg_gene <- enrichKEGG(gene = eg$ENTREZID, organism = "hsa",
+                              keyType = "kegg", pvalueCutoff = 1,
+                              pAdjustMethod = "BH", maxGSSize = 500)
+
+  ## 4)  MÉTA‑ANALYSE DES p‑VALUES -------------------------------------------
+  if (verbose) message("➜ Étape 4 : fusion & méta‑analyse des p‑values…")
+
+  normalize_pathway <- function(id) sub("^(hsa|map)", "", id)
+  tidy_enrich <- function(er, colname) er@result %>%
+    as_tibble() %>%
+    transmute(path_num   = normalize_pathway(ID),
+              description = Description,
+              !!colname   := p.adjust)
+
+  prot_df <- tidy_enrich(ora_kegg_prot, "prot_padj")
+  gene_df <- tidy_enrich(ora_kegg_gene, "gene_padj")
+  met_df  <- tidy_enrich(ora_kegg_cpd,  "met_padj")
+
+  merged_kegg <- list(gene_df, prot_df, met_df) %>%
+    reduce(full_join, by = "path_num") %>%
+    mutate(description = coalesce(description.x, description.y, description)) %>%
+    select(path_num, description, ends_with("_padj")) %>%
     mutate(
-      score    = -log10(combined_padj),
-      pct_lab  = paste0(round(pct_total), "%"),
-
-      db_star  = case_when(
-        str_detect(pathway, "^\\(REACTOME\\)") ~ "*",
-        str_detect(pathway, "^\\(KEGG\\)"    ) ~ "**",
-        TRUE                                    ~ ""
-      ),
-      path_clean = str_remove(pathway, "^\\((KEGG|REACTOME)\\)\\s*"),
-
-      trunc_w    = pmax(1, maxlen - nchar(db_star) - 1L),
-      path_abbr  = map2_chr(path_clean, trunc_w,
-                            ~ str_trunc(.x, width = .y, side = "right")),
-
-      ## make labels unique AFTER truncation
-      pathway_short = make.unique(paste0(path_abbr, " ", db_star), sep = " "),
-      pathway_short = factor(pathway_short, levels = rev(pathway_short))
+      p_comb_stouffer = apply(across(ends_with("_padj")), 1, \(row){
+        vals <- row[!is.na(row)]
+        vals[vals == 0] <- .Machine$double.xmin
+        if (length(vals) >= 2) return(sumz(vals)$p)
+        if (length(vals) == 1) return(vals)
+        NA_real_
+      }),
+      p_comb_stouffer_adj = p.adjust(p_comb_stouffer, method = "BH")
     )
 
-  ggplot(plot_df,
-         aes(x = score, y = pathway_short, fill = combined_padj)) +
-    geom_col() +
-    geom_text(aes(label = pct_lab, x = score + 0.15),
-              hjust = 0, size = 3) +
-    scale_fill_scico(
-      palette   = palette,
-      direction = 1,
-      trans     = "reverse",
-      name      = "adjusted p-value"
-    ) +
-    scale_x_continuous(expand = expansion(mult = c(0, 0.15))) +
-    labs(
-      x       = expression(-log[10]~"(adjusted p-value)"),
-      y       = NULL,
-      title   = sprintf("%s enrichment – %% of %s module",
-                        pheno_lab, module_col),
-      caption = "* Reactome      ** KEGG"
-    ) +
-    theme_minimal(base_size = 11) +
+  sig <- merged_kegg %>% filter(p_comb_stouffer_adj <= p_cutoff)
+
+  ## 5)  TREEPLOT -------------------------------------------------------------
+  if (verbose) message("➜ Étape 5 : génération du treeplot…")
+
+  # 5a) Préparation des geneSets
+  split_slash <- \(x) ifelse(is.na(x) | x == "", character(0),
+                             strsplit(x, "/", fixed = TRUE))
+  gset <- function(er) er@result %>%
+    as_tibble() %>% transmute(path_num = normalize_pathway(ID),
+                              gs = map(geneID, split_slash))
+
+  genesets_all <- bind_rows(gset(ora_kegg_gene),
+                            gset(ora_kegg_prot),
+                            gset(ora_kegg_cpd)) %>%
+    group_by(path_num) %>%
+    summarise(geneSets = list(unique(unlist(gs))),
+              Count    = lengths(geneSets),
+              .groups  = "drop")
+
+  sig2 <- sig %>% left_join(genesets_all, by = "path_num")
+
+  ## 5b) CLASSEMENT + TOP 40 --------------------------------------------------
+  sig2_ranked <- sig2 %>%
+    mutate(
+      nOmics = (!is.na(gene_padj)) + (!is.na(prot_padj)) + (!is.na(met_padj))
+    ) %>%
+    filter(p_comb_stouffer_adj < 0.05) %>%
+    arrange(desc(nOmics), p_comb_stouffer_adj)
+
+  top40_ids <- head(sig2_ranked$path_num, 40)
+
+  ## 5c) Objet enrichResult ---------------------------------------------------
+  res_df <- sig2 %>% transmute(
+    ID          = path_num,
+    Description = description,
+    pvalue      = p_comb_stouffer,
+    p.adjust    = p_comb_stouffer_adj,
+    qvalue      = p_comb_stouffer_adj,
+    geneID      = map_chr(geneSets, paste, collapse = "/"),
+    Count,
+    GeneRatio   = paste0(Count, "/", Count),
+    BgRatio     = GeneRatio
+  ) %>% as.data.frame()
+
+  er <<- new("enrichResult",
+            result        = res_df,
+            geneSets      = setNames(sig2$geneSets, sig2$path_num),
+            pvalueCutoff  = 1, pAdjustMethod = "none",
+            qvalueCutoff  = 1, organism = "UNKNOWN",
+            keytype = "UNKNOWN", readable = FALSE)
+
+  ## 5d) Similarité Jaccard + renommage ---------------------------------------
+  gs_list <- setNames(
+    map(er@result$geneID,
+        \(s) strsplit(s, "/", fixed = TRUE)[[1]] |> unique()),
+    er@result$ID)
+
+  ids <- names(gs_list); n <- length(ids)
+  jac <- matrix(0, n, n, dimnames = list(ids, ids))
+  for (i in seq_len(n)) {
+    gi <- gs_list[[i]]
+    for (j in i:n) {
+      gj            <- gs_list[[j]]
+      jac[i, j]     <- jac[j, i] <-
+        ifelse(length(unique(c(gi, gj))) == 0, 0,
+               length(intersect(gi, gj)) / length(unique(c(gi, gj))))
+    }
+  }
+
+  lab_vec <- with(er@result, setNames(Description, ID))
+  rownames(jac)  <- colnames(jac)  <- lab_vec[rownames(jac)]
+  names(gs_list) <- lab_vec[names(gs_list)]
+  er@result$ID   <- lab_vec[er@result$ID]
+
+  attr(er, "termsim") <- jac
+  er@geneSets        <- gs_list
+
+  ## 5e) TREEPLOT -------------------------------------------------------------
+  show_vec <- lab_vec[top40_ids] |> unname()
+
+  cluster_cols <- c(
+    "#2ca02c",  # cluster_1
+    "#33caff",  # cluster_2
+    "#9467bd",  # cluster_3
+    "#d62727",  # cluster_4
+    "#ffdf33"   # cluster_5
+  )
+
+  p <<- treeplot(
+    er,
+    showCategory   = show_vec,
+    cluster.params = list(
+      method = "average",
+      n      = length(cluster_cols),
+      color  = cluster_cols
+    ),
+    label_format   = 60,
+    color          = "p.adjust"
+  )
+
+  ggsave(out_pdf, p, width = 16.5, height = 11.7, units = "in")
+
+  ## 6)  HEAT‑MAP « MAJORITY OMICS » ------------------------------------------
+  if (verbose) message("➜ Étape 6 : heat‑map majority omics…")
+
+  min_prop <- 0.75                        # ≥ 75 % des termes du cluster
+
+  # 6a) Terme → identifiants bruts
+  term_to_ids <- setNames(
+    map(er@result$geneID, \(s) unique(strsplit(s, "/", fixed = TRUE)[[1]])),
+    er@result$ID
+  )
+
+  # 6b) Liste des clusters présents dans le treeplot
+  cluster_ids <- p[["data"]] |>
+    filter(isTip, !is.na(group), grepl("^cluster_", group)) |>
+    pull(group) |> unique()
+
+  representative_ids_by_cluster <- list()
+  for (cl in cluster_ids) {
+    terms <- p[["data"]] |> filter(isTip, group == cl, !is.na(label)) |>
+             pull(label) |> unique()
+    if (!length(terms)) next
+    ids_by_term <- term_to_ids[terms]
+    freq <- table(unlist(ids_by_term))
+    representative_ids_by_cluster[[cl]] <-
+      sort(names(freq)[freq / length(ids_by_term) >= min_prop])
+  }
+
+  # 6c) Conversion gène numérique → miRNA (autres id inchangés)
+  geneid_to_symbol <- setNames(eg$SYMBOL, as.character(eg$ENTREZID))
+  symbol_to_mirnas <- split(mirna_symbol$mature_mirna_id,
+                            mirna_symbol$target_symbol)
+
+  ids2miRNAs_keep_others <- function(ids) {
+    ids           <- as.character(ids)
+    id_is_numeric <- grepl("^\\d+$", ids)
+    gene_ids      <- ids[id_is_numeric]
+    other_ids     <- ids[!id_is_numeric]
+    syms <- geneid_to_symbol[gene_ids] |> na.omit()
+    miRs <- unique(unlist(symbol_to_mirnas[syms]))
+    unique(c(other_ids, miRs))
+  }
+
+  representative_mixed_by_cluster <-
+    lapply(representative_ids_by_cluster, ids2miRNAs_keep_others)
+  
+  print(representative_mixed_by_cluster)
+  
+  
+  
+  # 6d) Données longues pour ggplot
+  # 6d) Données longues pour ggplot
+  df <- purrr::imap_dfr(representative_mixed_by_cluster,
+                        ~tibble::tibble(id = .x, cluster = .y))
+  
+  print(df)
+  
+  # ---------------------------------------------------------------------------
+  # 1. id en caractère pour toute la suite
+  df$id <- as.character(df$id)
+  
+  # 2. Détection des ids à renommer -------------------------------------------
+  id_is_kegg    <- grepl("^C\\d{5}$",        df$id)   # composés KEGG
+  id_is_uniprot <- grepl("^[OPQ][0-9][A-Z0-9]{3}[0-9]$", df$id)  # UniProt 6 car.
+  
+  kegg_ids <- unique(df$id[id_is_kegg])
+  prot_ids <- unique(df$id[id_is_uniprot])
+  
+  # 3. Récupération des noms ---------------------------------------------------
+  kegg_raw   <- vapply(kegg_ids, get_kegg_name,  character(1), USE.NAMES = TRUE)
+  kegg_names <- sub(";.*$", "", kegg_raw) |> trimws()
+  
+  prot_names <- vapply(prot_ids, get_uniprot_name, character(1), USE.NAMES = TRUE)
+  
+  # 4. Substitution ------------------------------------------------------------
+  name_map <- c(kegg_names, prot_names)      # vecteur « ID = nom »
+  
+  df <- df %>%
+    mutate(id = if_else(id %in% names(name_map),
+                        name_map[id],
+                        id))
+  
+  # 5. (optionnel) remettre en facteur pour l’ordre de la heat‑map -------------
+  df <- df %>%
+    mutate(
+      id      = factor(id,      levels = rev(sort(unique(id)))),
+      cluster = factor(cluster, levels = names(representative_mixed_by_cluster))
+    )
+
+  # 6e) Palette (reuse cluster_cols)
+  cluster_cols_named <- setNames(cluster_cols, names(representative_mixed_by_cluster))
+
+  # 6f) Construction & sauvegarde
+  heat_title <- paste0("Majority omics by cluster – ",
+                       maladie, " – ",
+                       paste(modules, collapse = ", "))
+  p_heat <- ggplot(df, aes(x = cluster, y = id)) +
+    geom_tile(aes(fill = cluster), colour = "white", width = .9, height = .9) +
+    scale_fill_manual(values = cluster_cols_named, guide = "none") +
+    labs(title = heat_title, x = "Cluster", y = NULL) +
+    theme_minimal(base_size = 12) +
     theme(
-      panel.grid.major.y    = element_blank(),
-      legend.position       = "right",
-      plot.caption          = element_text(hjust = 0, vjust = 1, size = 9),
-      plot.caption.position = "plot"
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid  = element_blank()
     )
+
+  heatmap_pdf <- paste0(
+    "majority_omics_by_cluster_",
+    maladie, "_",
+    paste(modules, collapse = "_"),
+    ".pdf"
+  )
+  ggsave(heatmap_pdf, p_heat, width = 10, height = 14, units = "in")
+
+  if (verbose) message("✓ Heat‑map sauvegardée dans « ", heatmap_pdf, " ».")
+
+  ## 7)  VALEUR DE RETOUR -----------------------------------------------------
+  invisible(list(
+    filtered_multiomics = multi_omics_mod,
+    ora_kegg_gene       = ora_kegg_gene,
+    ora_kegg_prot       = ora_kegg_prot,
+    ora_kegg_cpd        = ora_kegg_cpd,
+    merged_kegg         = merged_kegg,
+    sig_paths           = sig2,
+    enrichResult        = er,
+    treeplot            = p,
+    representative_by_cluster = representative_mixed_by_cluster,
+    majority_heatmap    = p_heat
+  ))
 }
 
 
 
 ```
 
-
-### Fibrosis 
 ```{r}
-res_fibrosis_brown <- run_multiGSEA(multi_omics, metadata,
-                         moduleMembershipDF,
-                         condition_bin = "fibrosis_binary",
-                         module_color  = "brown",
-                         oid_map = oid_map,
-                         met_map = met_map,
-                         targets = targets)
-
-pdf(file = "../results/WGCNA/enrich_fibrosis_brown.pdf", wi = 9, he = 6)
-bar_enrichment_plot(
-         res_tbl    = res_fibrosis_brown,
-         module_col = "brown",
-         pheno_lab  = "Fibrosis",
+res <- multi_module_kegg_pipeline(
+         modules = c("yellow","brown"),
+         maladie = "ibd",
+         p_cutoff = 0.05,
+         out_pdf  = "treeplot_multimod_ibd.pdf"
        )
-dev.off()
-
-
-res_fibrosis_green <- run_multiGSEA(multi_omics, metadata,
-                         moduleMembershipDF,
-                         condition_bin = "fibrosis_binary",
-                         module_color  = "green",
-                         oid_map = oid_map,
-                         met_map = met_map,
-                         targets = targets)
-
-pdf(file = "../results/WGCNA/enrich_fibrosis_green.pdf", wi = 9, he = 6)
-bar_enrichment_plot(
-         res_tbl    = res_fibrosis_green,
-         module_col = "green",
-         pheno_lab  = "Fibrosis",
-       )
-dev.off()
-```
-
-
-### ALP 
-
-```{r}
-
-res_alp_brown <- run_multiGSEA(multi_omics, metadata,
-                         moduleMembershipDF,
-                         condition_bin = "alp_binary",
-                         module_color  = "brown",
-                         oid_map = oid_map,
-                         met_map = met_map,
-                         targets = targets)
-
-res_alp_green <- run_multiGSEA(multi_omics, metadata,
-                         moduleMembershipDF,
-                         condition_bin = "alp_binary",
-                         module_color  = "green",
-                         oid_map = oid_map,
-                         met_map = met_map,
-                         targets = targets)
-
 
 ```
 ```{r}
-pdf(file = "../results/WGCNA/enrich_alp_green.pdf", wi = 9, he = 6)
-bar_enrichment_plot(
-         res_tbl    = res_alp_green,
-         module_col = "green",
-         pheno_lab  = "ALP",
-       )
-dev.off()
+library(httr)
+library(jsonlite)
 
-pdf(file = "../results/WGCNA/enrich_alp_brown.pdf", wi = 9, he = 6)
-bar_enrichment_plot(
-         res_tbl    = res_alp_brown,
-         module_col = "brown",
-         pheno_lab  = "ALP",
-       )
-dev.off()
-```
+# ---- fonction qui récupère le nom recommandé pour UN identifiant ----
+get_uniprot_name <- function(id) {
+  url <- paste0("https://rest.uniprot.org/uniprotkb/", id, ".json")
+  res <- GET(url, accept_json())
+  stop_for_status(res)                  # signale une erreur réseau/API
+  j <- fromJSON(content(res, "text", encoding = "UTF-8"))
+  
+  # chemin JSON vers le nom recommandé
+  j$proteinDescription$recommendedName$fullName$value
+}
 
+# ---- vecteur d’identifiants ----
+ids <- c("O00585", "O14625", "Q9Y2T1")
 
+# ---- appel vectorisé avec vapply pour garder les noms dans le même ordre ----
+prot_names <- vapply(ids, get_uniprot_name, character(1))
 
-### Bilirubin 
-
-```{r}
-res_bilirubin_brown <- run_multiGSEA(multi_omics, metadata,
-                         moduleMembershipDF,
-                         condition_bin = "bilirubin_binary",
-                         module_color  = "brown",
-                         oid_map = oid_map,
-                         met_map = met_map,
-                         targets = targets)
-
-
-
-res_bilirubin_green <- run_multiGSEA(multi_omics, metadata,
-                         moduleMembershipDF,
-                         condition_bin = "bilirubin_binary",
-                         module_color  = "green",
-                         oid_map = oid_map,
-                         met_map = met_map,
-                         targets = targets)
-
-
-
-pdf(file = "../results/WGCNA/enrich_bilirubin_brown", wi = 9, he = 6)
-bar_enrichment_plot(
-         res_tbl    = res_bilirubin_brown,
-         module_col = "brown",
-         pheno_lab  = "Bilirubin",
-       )
-dev.off()
-
-pdf(file = "../results/WGCNA/enrich_bilirubin_green.pdf", wi = 9, he = 6)
-bar_enrichment_plot(
-         res_tbl    = res_bilirubin_green,
-         module_col = "green",
-         pheno_lab  = "Bilirubin",
-       )
-dev.off()
-```
-
-### CCA
-
-```{r}
-res_cca <- run_multiGSEA(multi_omics, metadata,
-                         moduleMembershipDF,
-                         condition_bin = "cca_binary",
-                         module_color  = "yellow",
-                         oid_map = oid_map,
-                         met_map = met_map,
-                         targets = targets)
+prot_names
 
 
 ```
 
 ```{r}
-pdf(file = "../results/WGCNA/enrich_cca_yellow.pdf", wi = 9, he = 6)
-bar_enrichment_plot(
-         res_tbl    = res_cca,
-         module_col = "yellow",
-         pheno_lab  = "CCA",
-       )
-dev.off()
+library(httr)
+
+# ---- fonction pour UN identifiant ----
+get_kegg_name <- function(id) {
+  url <- paste0("https://rest.kegg.jp/list/cpd:", id)   # endpoint « list »
+  res <- GET(url)
+  stop_for_status(res)
+  txt <- content(res, "text", encoding = "UTF-8")
+  
+  # format : "cpd:C00186\tL‑Glutamate\n"
+  strsplit(txt, "\t")[[1]][2] |>
+    trimws()
+}
+
+# ---- vecteur d’IDs ----
+ids <- c("C00186", "C00031", "C00311")
+
+# ---- appel vectorisé ----
+kegg_names <- vapply(ids, get_kegg_name, character(1))
+
+# kegg_names est le vecteur que vous avez déjà obtenu,
+# ex. c("C00186" = "(S)-Lactate; L-Lactate; L-Lactic acid", ...)
+
+kegg_names_first <- sub(";.*$", "", kegg_names) |>     # enlève tout après le 1ᵉʳ « ; »
+                     trimws()                          # supprime espaces de début/fin
+kegg_names_first
+
+
 ```
-
-
-### IBD
-
 
 ```{r}
-res_ibd_yellow <- run_multiGSEA(multi_omics, metadata,
-                         moduleMembershipDF,
-                         condition_bin = "ibd_binary",
-                         module_color  = "yellow",
-                         oid_map = oid_map,
-                         met_map = met_map,
-                         targets = targets)
 
+library(tibble)
 
-res_ibd_brown <- run_multiGSEA(multi_omics, metadata,
-                         moduleMembershipDF,
-                         condition_bin = "ibd_binary",
-                         module_color  = "brown",
-                         oid_map = oid_map,
-                         met_map = met_map,
-                         targets = targets)
+df <- tribble(
+  ~id,             ~cluster,
+  # miRNA (commencent par « hsa‑ »)
+  "hsa-miR-15a-5p","cluster_1",
+  "hsa-miR-29c-3p","cluster_1",
+  "hsa-let-7a-5p", "cluster_1",
+  # composés KEGG (Cxxxxx)
+  "C00186",        "cluster_2",
+  "C00031",        "cluster_2",
+  # protéines UniProt (O/P/Q + 5 caractères alphanumériques)
+  "Q07325",        "cluster_2",
+  "P80098",        "cluster_2",
+)
 
+id_is_kegg   <- grepl("^C\\d{5}$",       df$id)                  # C00186, C00311…
+id_is_uniprot<- grepl("^[OPQ][0-9][A-Z0-9]{3}[0-9]$", df$id)     # O00585, P01588…
 
+kegg_ids     <- unique(df$id[id_is_kegg])
+prot_ids     <- unique(df$id[id_is_uniprot])
 
+###############################################################################
+# 2. Récupération des noms ----------------------------------------------------
+###############################################################################
+#‑‑ KEGG composés -------------------------------------------------------------
+kegg_raw     <- vapply(kegg_ids, get_kegg_name, character(1), USE.NAMES = TRUE)
 
-pdf(file = "../results/WGCNA/enrich_ibd_brown", wi = 9, he = 6)
-bar_enrichment_plot(
-         res_tbl    = res_ibd_yellow,
-         module_col = "yellow",
-         pheno_lab  = "IBD",
-       )
-dev.off()
+kegg_names   <- sub(";.*$", "", kegg_raw) |>         # garde la partie avant le 1ᵉʳ « ; »
+                 trimws()                            # supprime espaces parasites
 
+#‑‑ UniProt protéines ---------------------------------------------------------
+prot_names   <- vapply(prot_ids, get_uniprot_name, character(1), USE.NAMES = TRUE)
 
-pdf(file = "../results/WGCNA/enrich_ibd_brown", wi = 9, he = 6)
-bar_enrichment_plot(
-         res_tbl    = res_ibd_brown,
-         module_col = "brown",
-         pheno_lab  = "IBD",
-       )
-dev.off()
+###############################################################################
+# 3. Dictionnaire ID → nom & remplacement dans df ----------------------------
+###############################################################################
+name_map     <- c(kegg_names, prot_names)            # vecteur nommé
+
+df <- df |>
+  dplyr::mutate(id = dplyr::if_else(id %in% names(name_map),
+                                    name_map[id],     # remplace
+                                    id))              # sinon garde l’ID d’origine
+
 ```
-
 
