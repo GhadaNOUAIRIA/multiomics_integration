@@ -9,10 +9,9 @@ metadata_preprocessing.R
 
 ## 2. These scripts analyse the data
 
-data_exploration.Rmd  
-WGCNA_multi_omics.Rmd  
-mixOmics_multi_omics.Rmd  
-enrichment_analysis.Rmd  
+data_exploration_vf.Rmd  
+WGCNA_multi_omics_vf.Rmd  
+mixOmics_multi_omics_vf.Rmd    
 
 ## 3. Extra scripts
 
