@@ -77,10 +77,10 @@ metadata_metabolites <- read_csv("../data/metadata_metabolomics.csv")
 ```{r stats}
 # Display statistical description (e.g., mean, sd) for selected metadata variables
 datatable(stat.desc(metadata %>% 
-                      slice(1:33) %>%
+                      dplyr::slice(1:33) %>%
                       mutate(ltx = if_else(str_detect(
                         `time_from_diagnosis_to_end_point_ltx_death_ltx-indication`, "X"), 0, 1)) %>%
-                      select(cca_binary, ibd_binary, crohn_or_uc, fibrosis_binary, fibrosis,
+                      dplyr::select(cca_binary, ibd_binary, crohn_or_uc, fibrosis_binary, fibrosis,
                              alp_binary, alp, bilirubin_binary, bilirubin, aih_binary,
                              sex, age_cat, bmi_cat, crp, alat, IgG_IgA_level,
                              IgG, IgA, ltx, auto_anb, jaundice, pruritis, fever_chill,
@@ -90,10 +90,10 @@ datatable(stat.desc(metadata %>%
 
 # Display variable summaries using base R's summary()
 summary(metadata %>% 
-          slice(1:33) %>%
+          dplyr::slice(1:33) %>%
           mutate(ltx = if_else(str_detect(
             `time_from_diagnosis_to_end_point_ltx_death_ltx-indication`, "X"), 0, 1)) %>%
-          select(cca_binary, ibd_binary, crohn_or_uc, fibrosis_binary, fibrosis,
+          dplyr::select(cca_binary, ibd_binary, crohn_or_uc, fibrosis_binary, fibrosis,
                  alp_binary, alp, bilirubin_binary, bilirubin, aih_binary,
                  sex, age_cat, bmi_cat, crp, alat, IgG_IgA_level,
                  IgG, IgA, ltx, auto_anb, jaundice, pruritis, fever_chill,
@@ -372,7 +372,7 @@ dev.off()
 pdf("../results/plots/data_exploration/hclust_miRNA.pdf", width = 10, height = 6)
 
 
-sampleTree = hclust(dist(miRNA), method = "average")
+sampleTree = hclust(dist(miRNA[1:33, ]), method = "average")
 
 par(cex = 0.6)
 par(mar = c(5, 6, 4, 2))
@@ -489,8 +489,8 @@ We check the plausible confounders and the studied effects in the data
 ```{r miRNA_svd, message=FALSE, warning=FALSE, results='hide'}
 # Prepare expression matrix (log-mature miRNA)
 beta1 <- miRNA %>%
-  slice(1:33) %>%
-  select(-patient_id) %>%
+  dplyr::slice(1:33) %>%
+  dplyr::select(-patient_id) %>%
   t() %>%
   as.data.frame()
 
@@ -544,8 +544,8 @@ pal <- brewer.pal(8, "Dark2")
 
 # Prepare transposed expression matrix
 mat <- miRNA %>%
-  select(-patient_id) %>%
-  slice(1:33) %>%
+  dplyr::select(-patient_id) %>%
+  dplyr::slice(1:33) %>%
   t()
 
 # Define dimensions to plot (pairs of PCs)
@@ -670,7 +670,7 @@ dev.off()
 
 ```{r}
 pdf("../results/plots/data_exploration/hclust_protein.pdf", width = 10, height = 6)
-sampleTree <- hclust(dist(proteins), method = "average")
+sampleTree = hclust(dist(proteins[1:33, ]), method = "average")
 
 par(cex = 0.6)
 par(mar = c(5, 6, 4, 2))
@@ -779,8 +779,8 @@ We check the plausible confounders and the studied effects in the data
 ```{r proteins_svd, message=FALSE, warning=FALSE, results='hide'}
 # Prepare protein expression matrix for SVD
 beta1 <- proteins %>%
-  slice(1:33) %>%
-  select(-patient_id) %>%
+  dplyr::slice(1:33) %>%
+  dplyr::select(-patient_id) %>%
   t() %>%
   as.data.frame()
 
@@ -829,8 +829,8 @@ pal <- brewer.pal(8, "Dark2")
 
 # Prepare matrix for MDS
 mat <- proteins %>%
-  select(-patient_id) %>%
-  slice(1:33) %>%
+  dplyr::select(-patient_id) %>%
+  dplyr::slice(1:33) %>%
   t()
 
 # Define dimension pairs and names
@@ -895,7 +895,7 @@ sample_names <- log2_metabolites$patient_id
 
 # Transpose matrix to plot feature-wise distributions per sample
 data <- log2_metabolites %>%
-  select(-patient_id) %>%
+  dplyr::select(-patient_id) %>%
   t()
 colnames(data) <- sample_names
 
@@ -913,7 +913,7 @@ pdf("../results/plots/data_exploration/boxplot_metabolites.pdf", width = 10, hei
 
 # Boxplot across samples
 log2_metabolites %>%
-  select(-patient_id) %>%
+  dplyr::select(-patient_id) %>%
   t() %>%
   boxplot(col = palette()[-1],
           main = "Metabolite distribution", 
@@ -922,7 +922,7 @@ log2_metabolites %>%
 
 # Boxplot across features (columns)
 log2_metabolites %>%
-  select(-patient_id) %>%
+  dplyr::select(-patient_id) %>%
   boxplot(col = palette()[-1],
           main = "Metabolite distribution",
           ylab = "Metabolite concentration")
@@ -933,10 +933,10 @@ dev.off()
 
 ```{r}
 # Subset to shared patients (33 PSC + 3 controls = 36)
-same_patients_metabo <- log2_metabolites %>% slice(1:36)
+same_patients_metabo <- log2_metabolites %>% dplyr::slice(1:36)
 
 pdf("../results/plots/data_exploration/hclust_metabolites.pdf", width = 10, height = 6)
-sampleTree <- hclust(dist(same_patients_metabo), method = "average")
+sampleTree = hclust(dist(same_patients_metabo[1:33, ]), method = "average")
 
 par(cex = 0.6)
 par(mar = c(5, 6, 4, 2))
@@ -1102,8 +1102,8 @@ pal <- brewer.pal(8, "Dark2")
 
 # Prepare data for MDS
 mat <- log2_metabolites %>%
-  select(-patient_id) %>%
-  slice(1:33) %>%
+  dplyr::select(-patient_id) %>%
+  dplyr::slice(1:33) %>%
   t()
 
 # Define 2D combinations
@@ -1222,3 +1222,9 @@ fviz_cluster(res, data = Xsc)
 fviz_silhouette(res)
 dev.off()
 ```
+
+
+
+
+
+
